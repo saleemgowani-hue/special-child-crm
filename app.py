@@ -1,6 +1,7 @@
 import io
 import sqlite3
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 import pandas as pd
 import plotly.express as px
@@ -16,29 +17,46 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---- Custom CSS for an attractive look ----
+# ---- Custom CSS for Dark & Light Mode Compatibility ----
 st.markdown(
     """
     <style>
-    .main { background-color: #f7f9fc; }
-    .stMetric {
-        background-color: white;
-        padding: 15px;
-        border-radius: 12px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+    /* Metric Card Fix for Dark/Light Mode */
+    div[data-testid="stMetric"] {
+        background-color: #ffffff !important;
+        padding: 15px !important;
+        border-radius: 12px !important;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.15) !important;
+        border: 1px solid #e2e8f0 !important;
     }
-    div[data-testid="stMetricValue"] { color: #1f6feb; font-weight: 700; }
+    div[data-testid="stMetricLabel"] {
+        color: #334155 !important;
+        font-weight: 600 !important;
+        font-size: 14px !important;
+    }
+    div[data-testid="stMetricValue"] {
+        color: #1f6feb !important;
+        font-weight: 700 !important;
+    }
+
+    /* Custom Card Fix for Patient Profile */
     .card {
-        background-color: white;
-        padding: 18px 20px;
-        border-radius: 14px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.07);
-        margin-bottom: 14px;
+        background-color: #ffffff !important;
+        color: #0f172a !important;
+        padding: 18px 20px !important;
+        border-radius: 14px !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
+        margin-bottom: 14px !important;
+        border: 1px solid #cbd5e1 !important;
     }
-    .badge-new { background:#e0f2fe; color:#0369a1; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
-    .badge-treatment { background:#fef9c3; color:#854d0e; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
-    .badge-completed { background:#dcfce7; color:#166534; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
-    h1, h2, h3 { font-family: 'Segoe UI', sans-serif; }
+    .card h3, .card b, .card span, .card div, .card p {
+        color: #0f172a !important;
+    }
+
+    /* Status Badges */
+    .badge-new { background:#e0f2fe !important; color:#0369a1 !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
+    .badge-treatment { background:#fef9c3 !important; color:#854d0e !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
+    .badge-completed { background:#dcfce7 !important; color:#166534 !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -78,7 +96,7 @@ def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
 
-        # ---- Step 1: Quarantine old schema if problematic ----
+        # Step 1: Quarantine old schema if problematic
         known_safe_notnull = {
             "id",
             "receiver_name",
@@ -87,8 +105,7 @@ def init_db():
             "phone",
         }
         cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND"
-            " name='leads'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='leads'"
         )
         if cursor.fetchone():
             cursor.execute("PRAGMA table_info(leads)")
@@ -104,7 +121,7 @@ def init_db():
                 backup_name = f"leads_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 cursor.execute(f"ALTER TABLE leads RENAME TO {backup_name}")
 
-        # ---- Step 2: Create a fresh table ----
+        # Step 2: Create a fresh table
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS leads (
@@ -126,7 +143,7 @@ def init_db():
             """
         )
 
-        # ---- Step 3: Ensure missing columns are added ----
+        # Step 3: Ensure missing columns are added
         required_columns = {
             "receiver_name": "TEXT",
             "child_name": "TEXT",
@@ -165,8 +182,7 @@ def init_db():
         if cursor.fetchone()[0] == 0:
             default_pass = make_hashes("admin123")
             cursor.execute(
-                "INSERT INTO users (username, password, name, role) VALUES"
-                " (?, ?, ?, ?)",
+                "INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)",
                 ("admin", default_pass, "HR Admin", "HR Admin"),
             )
 
@@ -189,15 +205,14 @@ for key, default in {
 
 
 # ==========================================================
-# AUTH HELPERS
+# AUTH & LINK HELPERS
 # ==========================================================
 def login_user(username, password):
     hashed_pswd = make_hashes(password)
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT username, name, role FROM users WHERE username=? AND"
-            " password=?",
+            "SELECT username, name, role FROM users WHERE username=? AND password=?",
             (username, hashed_pswd),
         )
         return cursor.fetchone()
@@ -209,8 +224,7 @@ def add_user(username, password, name, role):
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO users(username, password, name, role) VALUES"
-                " (?,?,?,?)",
+                "INSERT INTO users(username, password, name, role) VALUES (?,?,?,?)",
                 (username, hashed_pswd, name, role),
             )
             conn.commit()
@@ -239,11 +253,7 @@ def whatsapp_link(phone, message=""):
     digits = clean_phone_for_link(phone)
     if not digits:
         return None
-    from urllib.parse import quote
-
-    return (
-        f"https://wa.me/{digits}" + (f"?text={quote(message)}" if message else "")
-    )
+    return f"https://wa.me/{digits}" + (f"?text={quote(message)}" if message else "")
 
 
 def call_link(phone):
@@ -387,8 +397,7 @@ else:
                 st.rerun()
             else:
                 st.sidebar.error(
-                    "Kripya Receiver ka Naam, Bachche ka Naam aur Phone Number"
-                    " bharein."
+                    "Kripya Receiver ka Naam, Bachche ka Naam aur Phone Number bharein."
                 )
 
     # ---------- LOAD DATA ----------
@@ -431,13 +440,11 @@ else:
         if not due_today.empty:
             names = ", ".join(due_today["child_name"].head(5).tolist())
             st.warning(
-                f"📞 Aaj {len(due_today)} follow-up(s) due hain:"
-                f" {names}{' ...' if len(due_today) > 5 else ''}"
+                f"📞 Aaj {len(due_today)} follow-up(s) due hain: {names}{' ...' if len(due_today) > 5 else ''}"
             )
         if not due_tomorrow.empty:
             st.info(
-                f"🔔 Kal {len(due_tomorrow)} follow-up(s) due honge — abhi se"
-                " taiyaari karein."
+                f"🔔 Kal {len(due_tomorrow)} follow-up(s) due honge — abhi se taiyaari karein."
             )
 
     st.markdown("---")
@@ -601,9 +608,7 @@ else:
                         "📊 Export Excel",
                         data=buffer.getvalue(),
                         file_name=f"clinic_leads_{today_str}.xlsx",
-                        mime=(
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        ),
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                     )
 
@@ -654,9 +659,9 @@ else:
             st.subheader("🧒 Patient Profile — 360° View")
             if not df.empty:
                 profile_options = {
-                    f"ID {row['id']} - {row['child_name']} ({row['phone']})": (
-                        row["id"]
-                    )
+                    f"ID {row['id']} - {row['child_name']} ({row['phone']})": row[
+                        "id"
+                    ]
                     for _, row in df.iterrows()
                 }
                 selected_profile_label = st.selectbox(
@@ -677,13 +682,13 @@ else:
                         f"""
                         <div class="card">
                             <h3>{p['child_name']} {status_badge(p['status'])}</h3>
-                            <b>Pita ka Naam:</b> {p['father_name'] or '—'}<br>
-                            <b>Phone:</b> {p['phone']} &nbsp; | &nbsp; <b>City:</b> {p['city'] or '—'}<br>
-                            <b>Condition:</b> {p['condition'] or '—'}<br>
-                            <b>Clinic Visit Date:</b> {p['visit_date']} &nbsp; | &nbsp; <b>Follow-up Date:</b> {p['followup_date']}<br>
-                            <b>Fee Paid:</b> ₹{fee_val:,.0f}<br>
-                            <b>Call Receiver:</b> {p['receiver_name']}<br>
-                            <b>Notes:</b> {p['notes'] or '—'}
+                            <p><b>Pita ka Naam:</b> {p['father_name'] or '—'}</p>
+                            <p><b>Phone:</b> {p['phone']} &nbsp; | &nbsp; <b>City:</b> {p['city'] or '—'}</p>
+                            <p><b>Condition:</b> {p['condition'] or '—'}</p>
+                            <p><b>Clinic Visit Date:</b> {p['visit_date']} &nbsp; | &nbsp; <b>Follow-up Date:</b> {p['followup_date']}</p>
+                            <p><b>Fee Paid:</b> ₹{fee_val:,.0f}</p>
+                            <p><b>Call Receiver:</b> {p['receiver_name']}</p>
+                            <p><b>Notes:</b> {p['notes'] or '—'}</p>
                         </div>
                         """,
                         unsafe_allow_html=True,
@@ -693,10 +698,7 @@ else:
                     st.markdown("#### Quick Actions")
                     wa_url = whatsapp_link(
                         p["phone"],
-                        message=(
-                            f"Namaste, {p['child_name']} ke clinic"
-                            " visit/follow-up ke baare mein baat karni thi."
-                        ),
+                        message=f"Namaste, {p['child_name']} ke clinic visit/follow-up ke baare mein baat karni thi.",
                     )
                     tel_url = call_link(p["phone"])
                     if wa_url:
@@ -768,9 +770,9 @@ else:
             st.subheader("✏️ Existing Patient Record Update Karein")
             if not df.empty:
                 patient_options = {
-                    f"ID {row['id']} - {row['child_name']} ({row['phone']})": (
-                        row["id"]
-                    )
+                    f"ID {row['id']} - {row['child_name']} ({row['phone']})": row[
+                        "id"
+                    ]
                     for _, row in df.iterrows()
                 }
                 selected_patient_label = st.selectbox(
@@ -910,8 +912,7 @@ else:
                     v_str = str(selected_visit_date)
                     v_filtered = df[df["visit_date"] == v_str]
                     st.write(
-                        f"**Total Patients Scheduled ({v_str}):**"
-                        f" {len(v_filtered)}"
+                        f"**Total Patients Scheduled ({v_str}):** {len(v_filtered)}"
                     )
                     if not v_filtered.empty:
                         st.dataframe(v_filtered, use_container_width=True)
@@ -928,8 +929,7 @@ else:
                     f_str = str(selected_follow_date)
                     f_filtered = df[df["followup_date"] == f_str]
                     st.write(
-                        f"**Total Follow-ups Due ({f_str}):**"
-                        f" {len(f_filtered)}"
+                        f"**Total Follow-ups Due ({f_str}):** {len(f_filtered)}"
                     )
                     if not f_filtered.empty:
                         st.dataframe(f_filtered, use_container_width=True)
@@ -996,18 +996,14 @@ else:
                             c1, c2, c3 = st.columns([3, 2, 1])
                             with c1:
                                 st.markdown(
-                                    f"**{row['child_name']}** (Pita:"
-                                    f" {row['father_name'] or 'N/A'})"
+                                    f"**{row['child_name']}** (Pita: {row['father_name'] or 'N/A'})"
                                 )
                                 st.caption(
-                                    f"Phone: {row['phone']} | City:"
-                                    f" {row['city'] or 'N/A'} | Status:"
-                                    f" {row['status']}"
+                                    f"Phone: {row['phone']} | City: {row['city'] or 'N/A'} | Status: {row['status']}"
                                 )
                             with c2:
                                 st.markdown(
-                                    "🗓️ **Follow-up Date:**"
-                                    f" {row['followup_date']}"
+                                    f"🗓️ **Follow-up Date:** {row['followup_date']}"
                                 )
                                 st.caption(
                                     f"Note: {row['notes'] or 'Koi note nahi'}"
@@ -1015,8 +1011,7 @@ else:
                             with c3:
                                 wa_link = whatsapp_link(
                                     row["phone"],
-                                    f"Namaste, {row['child_name']} ke follow-up"
-                                    " ke baare mein reminder call/msg hai.",
+                                    f"Namaste, {row['child_name']} ke follow-up ke baare mein reminder call/msg hai.",
                                 )
                                 if wa_link:
                                     st.link_button(
@@ -1036,15 +1031,14 @@ else:
         with tab6:
             st.subheader("🗑️ Patient Record Hatayein")
             st.warning(
-                "⚠️ Dhyan den: Yahan se delete kiya gaya record permanently hat"
-                " jayega."
+                "⚠️ Dhyan den: Yahan se delete kiya gaya record permanently hat jayega."
             )
 
             if not df.empty:
                 delete_options = {
-                    f"ID {row['id']} - {row['child_name']} ({row['phone']})": (
-                        row["id"]
-                    )
+                    f"ID {row['id']} - {row['child_name']} ({row['phone']})": row[
+                        "id"
+                    ]
                     for _, row in df.iterrows()
                 }
                 selected_del_label = st.selectbox(
@@ -1114,14 +1108,12 @@ else:
                                 f"**{row['child_name']}** — {row['phone']}"
                             )
                             st.caption(
-                                f"Condition: {row['condition']} | City:"
-                                f" {row['city']} | Notes: {row['notes']}"
+                                f"Condition: {row['condition']} | City: {row['city']} | Notes: {row['notes']}"
                             )
                         with col_b:
                             wa_url_s = whatsapp_link(
                                 row["phone"],
-                                f"Namaste, {row['child_name']} ke clinic visit"
-                                " ke baare mein updates lene the.",
+                                f"Namaste, {row['child_name']} ke clinic visit ke baare mein updates lene the.",
                             )
                             if wa_url_s:
                                 st.link_button(
