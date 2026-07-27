@@ -17,26 +17,39 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---- Custom CSS for Dark & Light Mode Compatibility ----
+# ---- Custom CSS for Mobile & Dark Mode Compatibility ----
 st.markdown(
     """
     <style>
-    /* Metric Card Fix for Dark/Light Mode */
-    div[data-testid="stMetric"] {
+    /* Metric Card Background & Border Fix */
+    div[data-testid="stMetric"], 
+    div[data-testid="stMetric"] > div {
         background-color: #ffffff !important;
-        padding: 15px !important;
         border-radius: 12px !important;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.15) !important;
-        border: 1px solid #e2e8f0 !important;
     }
-    div[data-testid="stMetricLabel"] {
-        color: #334155 !important;
-        font-weight: 600 !important;
-        font-size: 14px !important;
+
+    div[data-testid="stMetric"] {
+        padding: 15px !important;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.2) !important;
+        border: 1px solid #cbd5e1 !important;
     }
-    div[data-testid="stMetricValue"] {
-        color: #1f6feb !important;
+
+    /* Metric Label (Total Patients, Aaj ke Visits etc.) Fix */
+    div[data-testid="stMetricLabel"], 
+    div[data-testid="stMetricLabel"] *,
+    div[data-testid="stMetricLabel"] label {
+        color: #0f172a !important;
         font-weight: 700 !important;
+        font-size: 15px !important;
+        -webkit-text-fill-color: #0f172a !important;
+    }
+
+    /* Metric Value (Numbers) Fix */
+    div[data-testid="stMetricValue"], 
+    div[data-testid="stMetricValue"] * {
+        color: #1d4ed8 !important;
+        font-weight: 800 !important;
+        -webkit-text-fill-color: #1d4ed8 !important;
     }
 
     /* Custom Card Fix for Patient Profile */
@@ -45,12 +58,13 @@ st.markdown(
         color: #0f172a !important;
         padding: 18px 20px !important;
         border-radius: 14px !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.2) !important;
         margin-bottom: 14px !important;
         border: 1px solid #cbd5e1 !important;
     }
     .card h3, .card b, .card span, .card div, .card p {
         color: #0f172a !important;
+        -webkit-text-fill-color: #0f172a !important;
     }
 
     /* Status Badges */
