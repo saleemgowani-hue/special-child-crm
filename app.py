@@ -17,38 +17,34 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---- Custom CSS for Mobile & Dark Mode Compatibility ----
+# ---- Custom CSS for Dark & Light Mode Compatibility ----
 st.markdown(
     """
     <style>
-    /* Metric Card Background & Border Fix */
-    div[data-testid="stMetric"], 
-    div[data-testid="stMetric"] > div {
+    /* Metric Card Custom HTML Fix */
+    .metric-card {
         background-color: #ffffff !important;
+        padding: 16px 20px !important;
         border-radius: 12px !important;
-    }
-
-    div[data-testid="stMetric"] {
-        padding: 15px !important;
         box-shadow: 0 4px 10px rgba(0,0,0,0.2) !important;
         border: 1px solid #cbd5e1 !important;
+        text-align: left !important;
+        margin-bottom: 15px !important;
     }
-
-    /* Metric Label (Total Patients, Aaj ke Visits etc.) Fix */
-    div[data-testid="stMetricLabel"], 
-    div[data-testid="stMetricLabel"] *,
-    div[data-testid="stMetricLabel"] label {
-        color: #0f172a !important;
+    .metric-label {
+        color: #334155 !important;
         font-weight: 700 !important;
-        font-size: 15px !important;
-        -webkit-text-fill-color: #0f172a !important;
+        font-size: 14px !important;
+        margin-bottom: 6px !important;
+        display: block !important;
+        -webkit-text-fill-color: #334155 !important;
     }
-
-    /* Metric Value (Numbers) Fix */
-    div[data-testid="stMetricValue"], 
-    div[data-testid="stMetricValue"] * {
+    .metric-value {
         color: #1d4ed8 !important;
         font-weight: 800 !important;
+        font-size: 28px !important;
+        line-height: 1.2 !important;
+        margin: 0 !important;
         -webkit-text-fill-color: #1d4ed8 !important;
     }
 
@@ -254,6 +250,15 @@ def status_badge(status):
         "Completed": "badge-completed",
     }.get(status, "badge-new")
     return f'<span class="{cls}">{status}</span>'
+
+
+def custom_metric(label, value):
+    return f"""
+    <div class="metric-card">
+        <span class="metric-label">{label}</span>
+        <h2 class="metric-value">{value}</h2>
+    </div>
+    """
 
 
 def clean_phone_for_link(phone, default_country_code="91"):
@@ -500,12 +505,29 @@ else:
                 else 0
             )
 
-            m1.metric("Total Patients", total_leads)
-            m2.metric("Aaj ke Visits", today_visits)
-            m3.metric("Aaj ke Follow-ups", today_followups)
-            m4.metric("In Treatment", in_treatment)
-            m5.metric("New Leads", new_leads)
-            m6.metric("Total Revenue", f"₹{total_revenue:,.0f}")
+            m1.markdown(
+                custom_metric("Total Patients", total_leads),
+                unsafe_allow_html=True,
+            )
+            m2.markdown(
+                custom_metric("Aaj ke Visits", today_visits),
+                unsafe_allow_html=True,
+            )
+            m3.markdown(
+                custom_metric("Aaj ke Follow-ups", today_followups),
+                unsafe_allow_html=True,
+            )
+            m4.markdown(
+                custom_metric("In Treatment", in_treatment),
+                unsafe_allow_html=True,
+            )
+            m5.markdown(
+                custom_metric("New Leads", new_leads), unsafe_allow_html=True
+            )
+            m6.markdown(
+                custom_metric("Total Revenue", f"₹{total_revenue:,.0f}"),
+                unsafe_allow_html=True,
+            )
 
             st.markdown("###")
 
