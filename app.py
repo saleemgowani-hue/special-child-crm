@@ -1,4 +1,4 @@
-import hashlib
+import io
 import sqlite3
 from datetime import datetime
 import pandas as pd
@@ -12,6 +12,8 @@ st.set_page_config(
 
 # Password Hashing Helper Functions
 def make_hashes(password):
+  import hashlib
+
   return hashlib.sha256(str.encode(password)).hexdigest()
 
 
@@ -114,12 +116,17 @@ def add_user(username, password, name, role):
 # 🔐 AUTHENTICATION SCREEN (COMPACT & CENTERED)
 # ==========================================
 if not st.session_state["logged_in"]:
-  # Center alignment ke liye columns use kiye gaye hain
   _, col_center, _ = st.columns([1, 1.1, 1])
 
   with col_center:
-    st.markdown("<h2 style='text-align: center;'>🏥 Clinic CRM</h2>", unsafe_allow_html=True)
-    st.markdown("<h4 style='text-align: center;'>🔐 Portal Login</h4>", unsafe_allow_html=True)
+    st.markdown(
+        "<h2 style='text-align: center;'>🏥 Clinic CRM</h2>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<h4 style='text-align: center;'>🔐 Portal Login</h4>",
+        unsafe_allow_html=True,
+    )
     st.markdown("---")
 
     auth_tab1, auth_tab2 = st.tabs(["🔑 Login", "📝 Sign Up"])
@@ -129,7 +136,9 @@ if not st.session_state["logged_in"]:
       with st.form("login_form"):
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
-        login_btn = st.form_submit_button("Login Karein", use_container_width=True)
+        login_btn = st.form_submit_button(
+            "Login Karein", use_container_width=True
+        )
 
         if login_btn:
           result = login_user(username, password)
@@ -152,13 +161,13 @@ if not st.session_state["logged_in"]:
         new_role = st.selectbox(
             "Role Chunein", ["Staff / Receiver", "HR Admin"]
         )
-        signup_btn = st.form_submit_button("Account Banayein", use_container_width=True)
+        signup_btn = st.form_submit_button(
+            "Account Banayein", use_container_width=True
+        )
 
         if signup_btn:
           if new_name and new_username and new_password:
-            success = add_user(
-                new_username, new_password, new_name, new_role
-            )
+            success = add_user(new_username, new_password, new_name, new_role)
             if success:
               st.success("Account ban gaya hai! Ab Login karein.")
             else:
@@ -261,7 +270,6 @@ else:
   # 🔴 ROLE BASED VIEW LOGIC (HR ADMIN VS STAFF)
   # ----------------------------------------------------
   if st.session_state["user_role"] == "HR Admin":
-    # HR Admin gets Full Access
     tab1, tab2, tab3, tab4 = st.tabs([
         "📋 Patients Dashboard (Full Access)",
         "✏️ Edit / Update Record",
@@ -269,7 +277,7 @@ else:
         "🗑️ Delete Record",
     ])
 
-    # --- TAB 1: Dashboard (Full View + Call Receiver Stats) ---
+    # --- TAB 1: Dashboard (Full View + Call Receiver Stats + Export) ---
     with tab1:
       m1, m2, m3, m4 = st.columns(4)
       total_leads = len(df)
@@ -291,21 +299,40 @@ else:
       st.markdown("---")
 
       if not df.empty:
-        col_search, col_export = st.columns([3, 1])
+        col_search, col_csv, col_excel = st.columns([2, 1, 1])
 
         with col_search:
           search_query = st.text_input(
               "🔍 Search (Naam, Phone, City, ya Receiver se):"
           )
 
-        with col_export:
+        with col_csv:
           st.markdown("###")
           csv_data = df.to_csv(index=False).encode("utf-8")
           st.download_button(
-              label="📥 Export CSV Data",
+              label="📄 Export CSV",
               data=csv_data,
               file_name=f"clinic_leads_{today_str}.csv",
               mime="text/csv",
+              use_container_width=True,
+          )
+
+        with col_excel:
+          st.markdown("###")
+          # Excel Buffer Generation
+          buffer = io.BytesIO()
+          with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Patients_Data")
+          excel_data = buffer.getvalue()
+
+          st.download_button(
+              label="📊 Export Excel (.xlsx)",
+              data=excel_data,
+              file_name=f"clinic_leads_{today_str}.xlsx",
+              mime=(
+                  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              ),
+              use_container_width=True,
           )
 
         filtered_df = df.copy()
@@ -445,7 +472,7 @@ else:
       else:
         st.info("Update karne ke liye koi record nahi hai.")
 
-    # --- TAB 3: Advanced Reports ---
+    # --- TAB 3: Advanced Reports (Included City-wise Reports) ---
     with tab3:
       st.subheader("📈 Zaroori Reports aur Analysis")
       if not df.empty:
@@ -478,6 +505,35 @@ else:
             st.dataframe(f_filtered, use_container_width=True)
           else:
             st.info("Is tarikh ko koi follow-up scheduled nahi hai.")
+
+        st.markdown("---")
+
+        # City-wise Report Section
+        st.markdown("### 🏙️ City-wise Report & Analysis")
+        city_col1, city_col2 = st.columns([1, 2])
+
+        with city_col1:
+          st.markdown("#### City-wise Patient Count")
+          city_counts = df["city"].value_counts().reset_index()
+          city_counts.columns = ["City (Shehar)", "Kul Bachche"]
+          st.dataframe(city_counts, use_container_width=True)
+
+        with city_col2:
+          st.markdown("#### City Ke Anusar Patients Filter Karein")
+          cities_list = [
+              str(c) for c in df["city"].dropna().unique() if str(c).strip()
+          ]
+          if cities_list:
+            selected_city = st.selectbox(
+                "City chunein:", ["Sabhi Cities"] + cities_list
+            )
+            if selected_city != "Sabhi Cities":
+              city_filtered_df = df[df["city"] == selected_city]
+              st.dataframe(city_filtered_df, use_container_width=True)
+            else:
+              st.dataframe(df, use_container_width=True)
+          else:
+            st.info("City ki koi details nahi mili.")
 
         st.markdown("---")
         st.markdown("### 🩺 Condition-wise Patient Count")
