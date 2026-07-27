@@ -53,7 +53,7 @@ def init_db():
             )
         """)
 
-    # Default HR Admin account banayein (agar users table khali ho)
+    # Default HR Admin account (Background mein create rahega)
     cursor.execute("SELECT COUNT(*) FROM users")
     if cursor.fetchone()[0] == 0:
       default_pass = make_hashes("admin123")
@@ -111,66 +111,60 @@ def add_user(username, password, name, role):
 
 
 # ==========================================
-# 🔐 AUTHENTICATION SCREEN (LOGIN / SIGNUP)
+# 🔐 AUTHENTICATION SCREEN (COMPACT & CENTERED)
 # ==========================================
 if not st.session_state["logged_in"]:
-  st.title("🏥 Normal Child Clinic CRM")
-  st.markdown("### 🔐 Kripya Portal Me Login Karein")
+  # Center alignment ke liye columns use kiye gaye hain
+  _, col_center, _ = st.columns([1, 1.1, 1])
 
-  auth_tab1, auth_tab2 = st.tabs(["🔑 Login", "📝 Sign Up (Naya User)"])
+  with col_center:
+    st.markdown("<h2 style='text-align: center;'>🏥 Clinic CRM</h2>", unsafe_allow_html=True)
+    st.markdown("<h4 style='text-align: center;'>🔐 Portal Login</h4>", unsafe_allow_html=True)
+    st.markdown("---")
 
-  # Login Form
-  with auth_tab1:
-    with st.form("login_form"):
-      username = st.text_input("Username")
-      password = st.text_input("Password", type="password")
-      login_btn = st.form_submit_button("Login Karein")
+    auth_tab1, auth_tab2 = st.tabs(["🔑 Login", "📝 Sign Up"])
 
-      if login_btn:
-        result = login_user(username, password)
-        if result:
-          st.session_state["logged_in"] = True
-          st.session_state["username"] = result[0]
-          st.session_state["user_name"] = result[1]
-          st.session_state["user_role"] = result[2]
-          st.success(f"Aapka Swagat Hai, {result[1]}!")
-          st.rerun()
-        else:
-          st.error("Galat Username ya Password! Kripya dobara koshish karein.")
+    # Login Form
+    with auth_tab1:
+      with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        login_btn = st.form_submit_button("Login Karein", use_container_width=True)
 
-  # Sign Up Form
-  with auth_tab2:
-    with st.form("signup_form"):
-      new_name = st.text_input("Aapka Pura Naam")
-      new_username = st.text_input("Chuna Hua Username")
-      new_password = st.text_input("Password", type="password")
-      new_role = st.selectbox(
-          "Role Chunein", ["Staff / Receiver", "HR Admin"]
-      )
-      signup_btn = st.form_submit_button("Account Banayein")
-
-      if signup_btn:
-        if new_name and new_username and new_password:
-          success = add_user(
-              new_username, new_password, new_name, new_role
-          )
-          if success:
-            st.success(
-                "Account safalpurvak ban gaya hai! Ab aap Login tab se login"
-                " kar sakte hain."
-            )
+        if login_btn:
+          result = login_user(username, password)
+          if result:
+            st.session_state["logged_in"] = True
+            st.session_state["username"] = result[0]
+            st.session_state["user_name"] = result[1]
+            st.session_state["user_role"] = result[2]
+            st.success(f"Swagat Hai, {result[1]}!")
+            st.rerun()
           else:
-            st.error(
-                "Ye Username pehle se maujood hai. Kripya doosra username"
-                " chunein."
-            )
-        else:
-          st.warning("Kripya sabhi jaankari bharein.")
+            st.error("Galat Username ya Password!")
 
-  st.info(
-      "💡 **Default HR Admin Credentials:**\n- Username: `admin`\n- Password:"
-      " `admin123`"
-  )
+    # Sign Up Form
+    with auth_tab2:
+      with st.form("signup_form"):
+        new_name = st.text_input("Pura Naam")
+        new_username = st.text_input("Username")
+        new_password = st.text_input("Password", type="password")
+        new_role = st.selectbox(
+            "Role Chunein", ["Staff / Receiver", "HR Admin"]
+        )
+        signup_btn = st.form_submit_button("Account Banayein", use_container_width=True)
+
+        if signup_btn:
+          if new_name and new_username and new_password:
+            success = add_user(
+                new_username, new_password, new_name, new_role
+            )
+            if success:
+              st.success("Account ban gaya hai! Ab Login karein.")
+            else:
+              st.error("Username pehle se maujood hai.")
+          else:
+            st.warning("Kripya sabhi jaankari bharein.")
 
 # ==========================================
 # 🏥 MAIN APPLICATION (LOGIN HO JANE KE BAAD)
