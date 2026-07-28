@@ -8,7 +8,7 @@ import plotly.express as px
 import streamlit as st
 
 # ==========================================================
-# 1. PAGE CONFIGURATION
+# 1. PAGE CONFIGURATION & STYLING
 # ==========================================================
 st.set_page_config(
     page_title="Normal Child Clinic CRM",
@@ -17,16 +17,14 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---- Custom CSS for Dark & Light Mode Compatibility ----
 st.markdown(
     """
     <style>
-    /* Metric Card Custom HTML Fix */
     .metric-card {
         background-color: #ffffff !important;
         padding: 16px 20px !important;
         border-radius: 12px !important;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.2) !important;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.1) !important;
         border: 1px solid #cbd5e1 !important;
         text-align: left !important;
         margin-bottom: 15px !important;
@@ -37,7 +35,6 @@ st.markdown(
         font-size: 14px !important;
         margin-bottom: 6px !important;
         display: block !important;
-        -webkit-text-fill-color: #334155 !important;
     }
     .metric-value {
         color: #1d4ed8 !important;
@@ -45,28 +42,11 @@ st.markdown(
         font-size: 28px !important;
         line-height: 1.2 !important;
         margin: 0 !important;
-        -webkit-text-fill-color: #1d4ed8 !important;
     }
-
-    /* Custom Card Fix for Patient Profile */
-    .card {
-        background-color: #ffffff !important;
-        color: #0f172a !important;
-        padding: 18px 20px !important;
-        border-radius: 14px !important;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.2) !important;
-        margin-bottom: 14px !important;
-        border: 1px solid #cbd5e1 !important;
-    }
-    .card h3, .card b, .card span, .card div, .card p {
-        color: #0f172a !important;
-        -webkit-text-fill-color: #0f172a !important;
-    }
-
-    /* Status Badges */
     .badge-new { background:#e0f2fe !important; color:#0369a1 !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
     .badge-treatment { background:#fef9c3 !important; color:#854d0e !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
     .badge-completed { background:#dcfce7 !important; color:#166534 !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
+    .badge-risk { background:#fee2e2 !important; color:#991b1b !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -85,19 +65,24 @@ CONDITIONS = [
 ]
 STATUSES = ["New Lead", "In Treatment", "Completed"]
 
-
 # ==========================================================
-# PASSWORD HASHING HELPERS
+# HELPERS
 # ==========================================================
 def make_hashes(password):
     import hashlib
-
     return hashlib.sha256(str.encode(password)).hexdigest()
 
+def clean_phone_for_link(phone, default_country_code="91"):
+    digits = "".join(ch for ch in str(phone) if ch.isdigit())
+    if len(digits) == 10:
+        digits = default_country_code + digits
+    return digits
 
-def check_hashes(password, hashed_text):
-    return make_hashes(password) == hashed_text
-
+def whatsapp_link(phone, message=""):
+    digits = clean_phone_for_link(phone)
+    if not digits:
+        return None
+    return f"https://wa.me/{digits}" + (f"?text={quote(message)}" if message else "")
 
 # ==========================================================
 # 2. DATABASE INITIALIZATION
@@ -105,40 +90,13 @@ def check_hashes(password, hashed_text):
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-
-        # Step 1: Quarantine old schema if problematic
-        known_safe_notnull = {
-            "id",
-            "receiver_name",
-            "child_name",
-            "father_name",
-            "phone",
-        }
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='leads'"
-        )
-        if cursor.fetchone():
-            cursor.execute("PRAGMA table_info(leads)")
-            table_info = cursor.fetchall()
-            problematic_cols = [
-                row[1]
-                for row in table_info
-                if row[3] == 1
-                and row[4] is None
-                and row[1] not in known_safe_notnull
-            ]
-            if problematic_cols:
-                backup_name = f"leads_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                cursor.execute(f"ALTER TABLE leads RENAME TO {backup_name}")
-
-        # Step 2: Create a fresh table
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS leads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 receiver_name TEXT NOT NULL,
                 child_name TEXT NOT NULL,
-                father_name TEXT NOT NULL,
+                father_name TEXT,
                 phone TEXT NOT NULL,
                 condition TEXT,
                 city TEXT,
@@ -148,34 +106,16 @@ def init_db():
                 status TEXT,
                 created_at TEXT,
                 fee_amount REAL,
-                doctor_name TEXT
+                doctor_name TEXT,
+                dob TEXT
             )
             """
         )
-
-        # Step 3: Ensure missing columns are added
-        required_columns = {
-            "receiver_name": "TEXT",
-            "child_name": "TEXT",
-            "father_name": "TEXT",
-            "phone": "TEXT",
-            "condition": "TEXT",
-            "city": "TEXT",
-            "visit_date": "TEXT",
-            "followup_date": "TEXT",
-            "notes": "TEXT",
-            "status": "TEXT",
-            "created_at": "TEXT",
-            "fee_amount": "REAL",
-            "doctor_name": "TEXT",
-        }
+        
         cursor.execute("PRAGMA table_info(leads)")
         existing_cols = [row[1] for row in cursor.fetchall()]
-        for col_name, col_type in required_columns.items():
-            if col_name not in existing_cols:
-                cursor.execute(
-                    f"ALTER TABLE leads ADD COLUMN {col_name} {col_type}"
-                )
+        if "dob" not in existing_cols:
+            cursor.execute("ALTER TABLE leads ADD COLUMN dob TEXT")
 
         cursor.execute(
             """
@@ -198,193 +138,71 @@ def init_db():
 
         conn.commit()
 
-
 init_db()
 
 # ==========================================================
-# 3. SESSION STATE
+# 3. SESSION STATE & AUTH
 # ==========================================================
-for key, default in {
-    "logged_in": False,
-    "username": "",
-    "user_role": "",
-    "user_name": "",
-}.items():
+for key, default in {"logged_in": False, "username": "", "user_role": "", "user_name": ""}.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
-
-# ==========================================================
-# AUTH & LINK HELPERS
-# ==========================================================
 def login_user(username, password):
     hashed_pswd = make_hashes(password)
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT username, name, role FROM users WHERE username=? AND password=?",
-            (username, hashed_pswd),
-        )
+        cursor.execute("SELECT username, name, role FROM users WHERE username=? AND password=?", (username, hashed_pswd))
         return cursor.fetchone()
 
-
-def add_user(username, password, name, role):
-    hashed_pswd = make_hashes(password)
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO users(username, password, name, role) VALUES (?,?,?,?)",
-                (username, hashed_pswd, name, role),
-            )
-            conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        return False
-
-
-def status_badge(status):
-    cls = {
-        "New Lead": "badge-new",
-        "In Treatment": "badge-treatment",
-        "Completed": "badge-completed",
-    }.get(status, "badge-new")
-    return f'<span class="{cls}">{status}</span>'
-
-
-def custom_metric(label, value):
-    return f"""
-    <div class="metric-card">
-        <span class="metric-label">{label}</span>
-        <h2 class="metric-value">{value}</h2>
-    </div>
-    """
-
-
-def clean_phone_for_link(phone, default_country_code="91"):
-    digits = "".join(ch for ch in str(phone) if ch.isdigit())
-    if len(digits) == 10:
-        digits = default_country_code + digits
-    return digits
-
-
-def whatsapp_link(phone, message=""):
-    digits = clean_phone_for_link(phone)
-    if not digits:
-        return None
-    return f"https://wa.me/{digits}" + (f"?text={quote(message)}" if message else "")
-
-
-def call_link(phone):
-    digits = clean_phone_for_link(phone)
-    return f"tel:+{digits}" if digits else None
-
-
-# ==========================================================
-# 🔐 AUTH SCREEN
-# ==========================================================
 if not st.session_state["logged_in"]:
     _, col_center, _ = st.columns([1, 1.2, 1])
-
     with col_center:
-        st.markdown(
-            "<h1 style='text-align:center;'>🏥 Normal Child Clinic</h1>"
-            "<h4 style='text-align:center; color:#555;'>CRM Portal</h4>",
-            unsafe_allow_html=True,
-        )
+        st.markdown("<h1 style='text-align:center;'>🏥 Normal Child Clinic</h1><h4 style='text-align:center; color:#555;'>CRM Portal</h4>", unsafe_allow_html=True)
         st.markdown("---")
-
-        auth_tab1, auth_tab2 = st.tabs(["🔑 Login", "📝 Sign Up"])
-
-        with auth_tab1:
-            with st.form("login_form"):
-                username = st.text_input("Username")
-                password = st.text_input("Password", type="password")
-                login_btn = st.form_submit_button(
-                    "Login Karein", use_container_width=True
-                )
-
-                if login_btn:
-                    result = login_user(username, password)
-                    if result:
-                        st.session_state["logged_in"] = True
-                        st.session_state["username"] = result[0]
-                        st.session_state["user_name"] = result[1]
-                        st.session_state["user_role"] = result[2]
-                        st.success(f"Swagat hai, {result[1]}!")
-                        st.rerun()
-                    else:
-                        st.error("Galat Username ya Password!")
-
-        with auth_tab2:
-            with st.form("signup_form"):
-                new_name = st.text_input("Pura Naam")
-                new_username = st.text_input("Username")
-                new_password = st.text_input("Password", type="password")
-                new_role = st.selectbox(
-                    "Role Chunein", ["Staff / Receiver", "HR Admin"]
-                )
-                signup_btn = st.form_submit_button(
-                    "Account Banayein", use_container_width=True
-                )
-
-                if signup_btn:
-                    if new_name and new_username and new_password:
-                        success = add_user(
-                            new_username, new_password, new_name, new_role
-                        )
-                        if success:
-                            st.success("Account ban gaya hai! Ab login karein.")
-                        else:
-                            st.error("Username pehle se maujood hai.")
-                    else:
-                        st.warning("Kripya sabhi jaankari bharein.")
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            if st.form_submit_button("Login Karein", use_container_width=True):
+                result = login_user(username, password)
+                if result:
+                    st.session_state["logged_in"] = True
+                    st.session_state["username"] = result[0]
+                    st.session_state["user_name"] = result[1]
+                    st.session_state["user_role"] = result[2]
+                    st.rerun()
+                else:
+                    st.error("Galat Username ya Password!")
 
 # ==========================================================
 # 🏥 MAIN APP
 # ==========================================================
 else:
-    # ---------- SIDEBAR ----------
+    # Sidebar Entry Form
     st.sidebar.markdown(f"### 👤 {st.session_state['user_name']}")
     st.sidebar.caption(f"🏷️ {st.session_state['user_role']}")
-
     if st.sidebar.button("🚪 Logout", use_container_width=True):
         st.session_state["logged_in"] = False
-        st.session_state["username"] = ""
-        st.session_state["user_role"] = ""
-        st.session_state["user_name"] = ""
         st.rerun()
 
     st.sidebar.markdown("---")
     st.sidebar.header("➕ Nayi Entry Jodein")
 
     with st.sidebar.form("entry_form", clear_on_submit=True):
-        receiver_name = st.text_input(
-            "Call Receiver ka Naam *", value=st.session_state["user_name"]
-        )
+        receiver_name = st.text_input("Call Receiver ka Naam *", value=st.session_state["user_name"])
         child_name = st.text_input("Bachche ka Naam *")
         father_name = st.text_input("Pita ka Naam")
         phone = st.text_input("Mobile Number *")
+        dob = st.date_input("Bachche ki Date of Birth (DOB)", value=None)
         condition = st.selectbox("Condition Chunein", CONDITIONS)
         city = st.text_input("City (Shehar)")
         doctor_name = st.text_input("Doctor ka Naam")
-        visit_date = st.date_input(
-            "Clinic Aane ki Date", value=datetime.today()
-        )
-        followup_date = st.date_input(
-            "Agli Follow-up Date", value=datetime.today() + timedelta(days=7)
-        )
-        notes = st.text_area("Doctor/Clinic Notes (Khaas baatein)")
+        visit_date = st.date_input("Clinic Aane ki Date", value=datetime.today())
+        followup_date = st.date_input("Agli Follow-up Date", value=datetime.today() + timedelta(days=7))
+        notes = st.text_area("Doctor/Clinic Notes")
         status = st.selectbox("Status", STATUSES)
-        fee_amount = st.number_input(
-            "Fee Amount (₹)", min_value=0.0, step=100.0, value=0.0
-        )
+        fee_amount = st.number_input("Fee Amount (₹)", min_value=0.0, step=100.0, value=0.0)
 
-        submit_button = st.form_submit_button(
-            "💾 Record Save Karein", use_container_width=True
-        )
-
-        if submit_button:
+        if st.form_submit_button("💾 Record Save Karein", use_container_width=True):
             if receiver_name and child_name and phone:
                 with sqlite3.connect(DB_PATH) as conn:
                     cursor = conn.cursor()
@@ -392,771 +210,200 @@ else:
                         """
                         INSERT INTO leads
                         (receiver_name, child_name, father_name, phone, condition, city,
-                         visit_date, followup_date, notes, status, created_at, fee_amount, doctor_name)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         visit_date, followup_date, notes, status, created_at, fee_amount, doctor_name, dob)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (
-                            receiver_name,
-                            child_name,
-                            father_name,
-                            phone,
-                            condition,
-                            city,
-                            str(visit_date),
-                            str(followup_date),
-                            notes,
-                            status,
-                            datetime.now().isoformat(timespec="seconds"),
-                            fee_amount,
-                            doctor_name,
-                        ),
+                        (receiver_name, child_name, father_name, phone, condition, city, str(visit_date), str(followup_date), notes, status, datetime.now().isoformat(timespec="seconds"), fee_amount, doctor_name, str(dob) if dob else None),
                     )
                     conn.commit()
-                st.sidebar.success("Record safalpurvak save ho gaya!")
+                st.sidebar.success("Record save ho gaya!")
                 st.rerun()
-            else:
-                st.sidebar.error(
-                    "Kripya Receiver ka Naam, Bachche ka Naam aur Phone Number bharein."
-                )
 
-    # ---------- LOAD DATA ----------
-    EXPECTED_COLUMNS = [
-        "id",
-        "receiver_name",
-        "child_name",
-        "father_name",
-        "phone",
-        "condition",
-        "city",
-        "visit_date",
-        "followup_date",
-        "notes",
-        "status",
-        "created_at",
-        "fee_amount",
-        "doctor_name",
-    ]
+    # Data Load
     with sqlite3.connect(DB_PATH) as conn:
-        try:
-            df = pd.read_sql("SELECT * FROM leads ORDER BY id DESC", conn)
-        except Exception:
-            df = pd.DataFrame(columns=EXPECTED_COLUMNS)
+        df = pd.read_sql("SELECT * FROM leads ORDER BY id DESC", conn)
 
-    for col in EXPECTED_COLUMNS:
-        if col not in df.columns:
-            df[col] = None
-
-    today_str = str(datetime.today().date())
-    tomorrow_str = str((datetime.today() + timedelta(days=1)).date())
+    today_dt = datetime.today().date()
+    today_str = str(today_dt)
 
     st.title("🏥 Normal Child Clinic — CRM Dashboard")
     st.caption(f"Aaj: {datetime.today().strftime('%d %B %Y')}")
 
-    # ---------- TODAY'S ALERT BANNER ----------
-    if not df.empty:
-        due_today = df[df["followup_date"] == today_str]
-        due_tomorrow = df[df["followup_date"] == tomorrow_str]
-        if not due_today.empty:
-            names = ", ".join(due_today["child_name"].head(5).tolist())
-            st.warning(
-                f"📞 Aaj {len(due_today)} follow-up(s) due hain: {names}{' ...' if len(due_today) > 5 else ''}"
-            )
-        if not due_tomorrow.empty:
-            st.info(
-                f"🔔 Kal {len(due_tomorrow)} follow-up(s) due honge — abhi se taiyaari karein."
-            )
-
-    st.markdown("---")
+    # Navigation Tabs
+    tab_dashboard, tab_reports = st.tabs(["📋 Main Dashboard & Action Panel", "📊 Analytics & Advanced Reports"])
 
     # ==========================================================
-    # ROLE-BASED VIEW
+    # TAB 1: DASHBOARD & QUICK ACTIONS
     # ==========================================================
-    if st.session_state["user_role"] == "HR Admin":
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-            [
-                "📋 Dashboard",
-                "🧒 Patient Profile",
-                "✏️ Edit Record",
-                "📊 Reports & Analytics",
-                "📅 Follow-up Tracker",
-                "🗑️ Delete Record",
+    with tab_dashboard:
+        if not df.empty:
+            df["followup_dt"] = pd.to_datetime(df["followup_date"], errors="coerce").dt.date
+            
+            # OVERDUE RED ALERT
+            overdue_df = df[df["followup_dt"] < today_dt]
+            if not overdue_df.empty:
+                st.error(f"🚨 **OVERDUE ALERT:** {len(overdue_df)} Patients ke follow-ups choot gaye hain!")
+
+            # BIRTHDAY ALERT
+            if "dob" in df.columns:
+                df["dob_clean"] = pd.to_datetime(df["dob"], errors="coerce")
+                bday_today = df[(df["dob_clean"].dt.month == today_dt.month) & (df["dob_clean"].dt.day == today_dt.day)]
+                if not bday_today.empty:
+                    st.balloons()
+                    st.info(f"🎈 **HAPPY BIRTHDAY!** Aaj {len(bday_today)} child(ren) ka birthday hai!")
+                    for _, b_row in bday_today.iterrows():
+                        b_msg = f"Normal Child Clinic ki taraf se {b_row['child_name']} ko Janamdin ki bohot bohot shubhkamnayein! 🎂🎉"
+                        b_url = whatsapp_link(b_row['phone'], b_msg)
+                        c_b1, c_b2 = st.columns([3, 1])
+                        c_b1.write(f"🎂 **{b_row['child_name']}** (Pita: {b_row['father_name'] or '—'})")
+                        if b_url:
+                            c_b2.link_button("🎉 Send Wish", b_url, use_container_width=True)
+
+            # DROPOUT RISK ALERT
+            thirty_days_ago = today_dt - timedelta(days=30)
+            dropout_df = df[
+                (df["status"] != "Completed") & 
+                (df["followup_dt"].notna()) & 
+                (df["followup_dt"] < thirty_days_ago)
             ]
+
+            if not dropout_df.empty:
+                st.warning(f"⚠️ **DROP-OUT RISK ALERT:** {len(dropout_df)} patients 30+ dino se inactive hain!")
+
+        st.markdown("---")
+
+        # DROPOUT RECOVERY EXPANDER
+        if not df.empty and not dropout_df.empty:
+            with st.expander("🚨 View & Re-engage Drop-out Risk Patients (30+ Days Inactive)", expanded=False):
+                for _, d_row in dropout_df.iterrows():
+                    col_d1, col_d2, col_d3 = st.columns([2.5, 2, 1.5])
+                    with col_d1:
+                        st.markdown(f"**🧒 {d_row['child_name']}** <span class='badge-risk'>Lapsed Patient</span>", unsafe_allow_html=True)
+                        st.caption(f"📱 {d_row['phone']} | 📍 {d_row['city'] or 'N/A'}")
+                    with col_d2:
+                        st.markdown(f"🩺 **Condition:** {d_row['condition']}")
+                        st.caption(f"🗓️ Last Follow-up Due: **{d_row['followup_date']}**")
+                    with col_d3:
+                        re_engage_msg = f"Namaste {d_row['father_name'] or ''} ji, Normal Child Clinic se doctor ka message hai. Humne notice kiya ki {d_row['child_name']} ki regular sessions beech me ruk gayi hain. Treatment continuous rakhne se hi behtar improvement aati hai. Kripya humse contact karke agli visit schedule karein."
+                        re_wa_url = whatsapp_link(d_row["phone"], re_engage_msg)
+                        if re_wa_url:
+                            st.link_button("🔄 Re-engage WhatsApp", re_wa_url, use_container_width=True)
+                    st.divider()
+
+        # ACTION PANEL
+        st.markdown("### 💬 Quick Follow-up Action Panel")
+        template_option = st.selectbox(
+            "📱 WhatsApp Message Template Chunein:",
+            ["General Follow-up", "Appointment Reminder", "Reports Ready", "Custom Message"]
         )
 
-        # -------- TAB 1: DASHBOARD --------
-        with tab1:
-            m1, m2, m3, m4, m5, m6 = st.columns(6)
-            total_leads = len(df)
-            today_visits = (
-                len(df[df["visit_date"] == today_str]) if not df.empty else 0
-            )
-            today_followups = (
-                len(df[df["followup_date"] == today_str]) if not df.empty else 0
-            )
-            in_treatment = (
-                len(df[df["status"] == "In Treatment"]) if not df.empty else 0
-            )
-            new_leads = (
-                len(df[df["status"] == "New Lead"]) if not df.empty else 0
-            )
-            total_revenue = (
-                df["fee_amount"].fillna(0).sum()
-                if not df.empty and "fee_amount" in df.columns
-                else 0
-            )
+        due_today_list = df[df["followup_date"] == today_str] if not df.empty else pd.DataFrame()
 
-            m1.markdown(
-                custom_metric("Total Patients", total_leads),
-                unsafe_allow_html=True,
-            )
-            m2.markdown(
-                custom_metric("Aaj ke Visits", today_visits),
-                unsafe_allow_html=True,
-            )
-            m3.markdown(
-                custom_metric("Aaj ke Follow-ups", today_followups),
-                unsafe_allow_html=True,
-            )
-            m4.markdown(
-                custom_metric("In Treatment", in_treatment),
-                unsafe_allow_html=True,
-            )
-            m5.markdown(
-                custom_metric("New Leads", new_leads), unsafe_allow_html=True
-            )
-            m6.markdown(
-                custom_metric("Total Revenue", f"₹{total_revenue:,.0f}"),
-                unsafe_allow_html=True,
-            )
-
-            st.markdown("###")
-
-            if not df.empty:
-                chart_col1, chart_col2 = st.columns(2)
-                with chart_col1:
-                    st.markdown("#### 🩺 Condition-wise Distribution")
-                    cond_counts = df["condition"].value_counts().reset_index()
-                    cond_counts.columns = ["Condition", "Count"]
-                    fig1 = px.pie(
-                        cond_counts,
-                        names="Condition",
-                        values="Count",
-                        hole=0.45,
-                    )
-                    fig1.update_layout(
-                        margin=dict(t=10, b=10, l=10, r=10), height=320
-                    )
-                    st.plotly_chart(fig1, use_container_width=True)
-
-                with chart_col2:
-                    st.markdown("#### 📈 Status Overview")
-                    status_counts = df["status"].value_counts().reset_index()
-                    status_counts.columns = ["Status", "Count"]
-                    fig2 = px.bar(
-                        status_counts,
-                        x="Status",
-                        y="Count",
-                        color="Status",
-                        text="Count",
-                    )
-                    fig2.update_layout(
-                        margin=dict(t=10, b=10, l=10, r=10),
-                        height=320,
-                        showlegend=False,
-                    )
-                    st.plotly_chart(fig2, use_container_width=True)
-
-                st.markdown("#### 📅 Visits Trend (Last 30 Days)")
-                trend_df = df.copy()
-                trend_df["visit_date"] = pd.to_datetime(
-                    trend_df["visit_date"], errors="coerce"
-                )
-                cutoff = datetime.today() - timedelta(days=30)
-                trend_df = trend_df[trend_df["visit_date"] >= cutoff]
-                if not trend_df.empty:
-                    daily_counts = (
-                        trend_df.groupby(trend_df["visit_date"].dt.date)
-                        .size()
-                        .reset_index(name="Visits")
-                    )
-                    fig3 = px.line(
-                        daily_counts, x="visit_date", y="Visits", markers=True
-                    )
-                    fig3.update_layout(
-                        margin=dict(t=10, b=10, l=10, r=10), height=280
-                    )
-                    st.plotly_chart(fig3, use_container_width=True)
+        if not due_today_list.empty:
+            for idx, p_row in due_today_list.iterrows():
+                if template_option == "General Follow-up":
+                    msg = f"Namaste {p_row['father_name'] or ''} ji, Normal Child Clinic se follow-up call/msg hai. Bachche {p_row['child_name']} ki health kaisi hai?"
+                elif template_option == "Appointment Reminder":
+                    msg = f"Namaste {p_row['father_name'] or ''} ji, Reminding about {p_row['child_name']}'s visit scheduled at Normal Child Clinic."
+                elif template_option == "Reports Ready":
+                    msg = f"Namaste, {p_row['child_name']} ki clinic reports ready hain. Kripya clinic se collect kar lein."
                 else:
-                    st.info("Pichle 30 dinon mein koi visit data nahi hai.")
+                    msg = f"Namaste {p_row['father_name'] or ''} ji, Normal Child Clinic se contact kar rahe hain."
 
-                st.markdown("#### 💰 Monthly Revenue")
-                rev_df = df.copy()
-                rev_df["visit_date"] = pd.to_datetime(
-                    rev_df["visit_date"], errors="coerce"
-                )
-                rev_df["fee_amount"] = rev_df["fee_amount"].fillna(0)
-                rev_df = rev_df.dropna(subset=["visit_date"])
-                if not rev_df.empty and rev_df["fee_amount"].sum() > 0:
-                    rev_df["month"] = (
-                        rev_df["visit_date"].dt.to_period("M").astype(str)
-                    )
-                    monthly_rev = (
-                        rev_df.groupby("month")["fee_amount"]
-                        .sum()
-                        .reset_index()
-                    )
-                    fig5 = px.bar(
-                        monthly_rev, x="month", y="fee_amount", text_auto=".2s"
-                    )
-                    fig5.update_layout(
-                        margin=dict(t=10, b=10, l=10, r=10),
-                        height=280,
-                        yaxis_title="Revenue (₹)",
-                    )
-                    st.plotly_chart(fig5, use_container_width=True)
-                else:
-                    st.info("Abhi tak koi fee data record nahi hua hai.")
+                wa_btn_url = whatsapp_link(p_row["phone"], msg)
 
-                st.markdown("---")
-                col_search, col_csv, col_excel = st.columns([2, 1, 1])
-                with col_search:
-                    search_query = st.text_input(
-                        "🔍 Search (Naam, Phone, City, ya Receiver se):"
-                    )
-                with col_csv:
-                    st.markdown("###")
-                    csv_data = df.to_csv(index=False).encode("utf-8")
-                    st.download_button(
-                        "📄 Export CSV",
-                        data=csv_data,
-                        file_name=f"clinic_leads_{today_str}.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                    )
-                with col_excel:
-                    st.markdown("###")
-                    buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                        df.to_excel(
-                            writer, index=False, sheet_name="Patients_Data"
-                        )
-                    st.download_button(
-                        "📊 Export Excel",
-                        data=buffer.getvalue(),
-                        file_name=f"clinic_leads_{today_str}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
-
-                filtered_df = df.copy()
-                if search_query:
-                    filtered_df = df[
-                        df["child_name"].str.contains(
-                            search_query, case=False, na=False
-                        )
-                        | df["phone"].str.contains(
-                            search_query, case=False, na=False
-                        )
-                        | df["city"].str.contains(
-                            search_query, case=False, na=False
-                        )
-                        | df["receiver_name"].str.contains(
-                            search_query, case=False, na=False
-                        )
-                    ]
-
-                st.markdown("#### 📋 Patient Records")
-                st.dataframe(
-                    filtered_df, use_container_width=True, height=350
-                )
-
-                st.markdown("#### 🧑‍💼 Call Receiver Performance")
-                receiver_counts = (
-                    df["receiver_name"].value_counts().reset_index()
-                )
-                receiver_counts.columns = ["Receiver Naam", "Kul Entries"]
-                fig4 = px.bar(
-                    receiver_counts,
-                    x="Receiver Naam",
-                    y="Kul Entries",
-                    text="Kul Entries",
-                )
-                fig4.update_layout(
-                    margin=dict(t=10, b=10, l=10, r=10), height=280
-                )
-                st.plotly_chart(fig4, use_container_width=True)
-            else:
-                st.info(
-                    "Abhi tak koi record nahi hai. Sidebar se entry add karein."
-                )
-
-        # -------- TAB 2: PATIENT PROFILE --------
-        with tab2:
-            st.subheader("🧒 Patient Profile — 360° View")
-            if not df.empty:
-                profile_options = {
-                    f"ID {row['id']} - {row['child_name']} ({row['phone']})": row[
-                        "id"
-                    ]
-                    for _, row in df.iterrows()
-                }
-                selected_profile_label = st.selectbox(
-                    "Patient chunein:",
-                    list(profile_options.keys()),
-                    key="profile_select",
-                )
-                p_id = profile_options[selected_profile_label]
-                p = df[df["id"] == p_id].iloc[0]
-
-                fee_val = (
-                    p["fee_amount"] if pd.notna(p.get("fee_amount")) else 0
-                )
-
-                col_info, col_actions = st.columns([2.5, 1])
-                with col_info:
-                    st.markdown(
-                        f"""
-                        <div class="card">
-                            <h3>{p['child_name']} {status_badge(p['status'])}</h3>
-                            <p><b>Pita ka Naam:</b> {p['father_name'] or '—'}</p>
-                            <p><b>Phone:</b> {p['phone']} &nbsp; | &nbsp; <b>City:</b> {p['city'] or '—'}</p>
-                            <p><b>Condition:</b> {p['condition'] or '—'}</p>
-                            <p><b>Clinic Visit Date:</b> {p['visit_date']} &nbsp; | &nbsp; <b>Follow-up Date:</b> {p['followup_date']}</p>
-                            <p><b>Fee Paid:</b> ₹{fee_val:,.0f}</p>
-                            <p><b>Call Receiver:</b> {p['receiver_name']}</p>
-                            <p><b>Notes:</b> {p['notes'] or '—'}</p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                with col_actions:
-                    st.markdown("#### Quick Actions")
-                    wa_url = whatsapp_link(
-                        p["phone"],
-                        message=f"Namaste, {p['child_name']} ke clinic visit/follow-up ke baare mein baat karni thi.",
-                    )
-                    tel_url = call_link(p["phone"])
-                    if wa_url:
-                        st.link_button(
-                            "💬 WhatsApp Karein",
-                            wa_url,
-                            use_container_width=True,
-                        )
-                    if tel_url:
-                        st.link_button(
-                            "📞 Call Karein", tel_url, use_container_width=True
-                        )
-
-                    with st.form(f"quick_status_{p_id}"):
-                        new_status = st.selectbox(
-                            "Status Update Karein",
-                            STATUSES,
-                            index=(
-                                STATUSES.index(p["status"])
-                                if p["status"] in STATUSES
-                                else 0
-                            ),
-                        )
-                        quick_update = st.form_submit_button(
-                            "💾 Update", use_container_width=True
-                        )
-                        if quick_update:
-                            with sqlite3.connect(DB_PATH) as conn:
-                                cursor = conn.cursor()
-                                cursor.execute(
-                                    "UPDATE leads SET status=? WHERE id=?",
-                                    (new_status, p_id),
-                                )
-                                conn.commit()
-                            st.success("Status update ho gaya!")
-                            st.rerun()
-
-                st.markdown("---")
-                st.markdown("#### 📜 Is Receiver ke Baaki Patients")
-                same_receiver = df[
-                    (df["receiver_name"] == p["receiver_name"])
-                    & (df["id"] != p_id)
-                ]
-                if not same_receiver.empty:
-                    st.dataframe(
-                        same_receiver[
-                            [
-                                "id",
-                                "child_name",
-                                "phone",
-                                "status",
-                                "followup_date",
-                            ]
-                        ],
-                        use_container_width=True,
-                        height=200,
-                    )
-                else:
-                    st.info(
-                        "Is receiver ke paas koi aur patient record nahi hai."
-                    )
-            else:
-                st.info(
-                    "Abhi tak koi record nahi hai. Sidebar se entry add karein."
-                )
-
-        # -------- TAB 3: EDIT RECORD --------
-        with tab3:
-            st.subheader("✏️ Existing Patient Record Update Karein")
-            if not df.empty:
-                patient_options = {
-                    f"ID {row['id']} - {row['child_name']} ({row['phone']})": row[
-                        "id"
-                    ]
-                    for _, row in df.iterrows()
-                }
-                selected_patient_label = st.selectbox(
-                    "Update karne ke liye Patient chunein:",
-                    list(patient_options.keys()),
-                )
-                selected_id = patient_options[selected_patient_label]
-                patient_data = df[df["id"] == selected_id].iloc[0]
-
-                with st.form("edit_form"):
-                    e_col1, e_col2 = st.columns(2)
-                    with e_col1:
-                        e_receiver_name = st.text_input(
-                            "Call Receiver", value=patient_data["receiver_name"]
-                        )
-                        e_child_name = st.text_input(
-                            "Bachche ka Naam", value=patient_data["child_name"]
-                        )
-                        e_father_name = st.text_input(
-                            "Pita ka Naam", value=patient_data["father_name"]
-                        )
-                        e_phone = st.text_input(
-                            "Mobile Number", value=patient_data["phone"]
-                        )
-                        e_city = st.text_input(
-                            "City", value=patient_data["city"]
-                        )
-                        e_doctor_name = st.text_input(
-                            "Doctor ka Naam",
-                            value=(
-                                patient_data["doctor_name"]
-                                if pd.notna(patient_data.get("doctor_name"))
-                                else ""
-                            ),
-                        )
-
-                    with e_col2:
-                        cond_idx = (
-                            CONDITIONS.index(patient_data["condition"])
-                            if patient_data["condition"] in CONDITIONS
-                            else 0
-                        )
-                        e_condition = st.selectbox(
-                            "Condition", CONDITIONS, index=cond_idx
-                        )
-
-                        try:
-                            v_date = datetime.strptime(
-                                patient_data["visit_date"], "%Y-%m-%d"
-                            ).date()
-                        except Exception:
-                            v_date = datetime.today().date()
-                        try:
-                            f_date = datetime.strptime(
-                                patient_data["followup_date"], "%Y-%m-%d"
-                            ).date()
-                        except Exception:
-                            f_date = datetime.today().date()
-
-                        e_visit_date = st.date_input(
-                            "Clinic Visit Date", value=v_date
-                        )
-                        e_followup_date = st.date_input(
-                            "Agli Follow-up Date", value=f_date
-                        )
-
-                        status_idx = (
-                            STATUSES.index(patient_data["status"])
-                            if patient_data["status"] in STATUSES
-                            else 0
-                        )
-                        e_status = st.selectbox(
-                            "Status", STATUSES, index=status_idx
-                        )
-
-                    e_notes = st.text_area(
-                        "Doctor/Clinic Notes", value=patient_data["notes"]
-                    )
-                    e_fee = st.number_input(
-                        "Fee Amount (₹)",
-                        min_value=0.0,
-                        step=100.0,
-                        value=(
-                            float(patient_data["fee_amount"])
-                            if pd.notna(patient_data.get("fee_amount"))
-                            else 0.0
-                        ),
-                    )
-                    update_button = st.form_submit_button(
-                        "💾 Record Update Karein"
-                    )
-
-                    if update_button:
+                col_p1, col_p2, col_p3 = st.columns([2, 2, 1.5])
+                with col_p1:
+                    st.markdown(f"**🧒 {p_row['child_name']}** (Pita: {p_row['father_name'] or '—'})")
+                    st.caption(f"📱 {p_row['phone']} | 📍 {p_row['city'] or 'N/A'}")
+                
+                with col_p2:
+                    st.caption(f"📝 Current Note: {p_row['notes'] or 'N/A'}")
+                    new_quick_note = st.text_input("Naya Remark likhein:", key=f"note_input_{p_row['id']}", placeholder="+ Add note...")
+                    if st.button("Save Note", key=f"save_note_{p_row['id']}"):
+                        updated_note = (p_row['notes'] or "") + f" | [{today_str}]: " + new_quick_note
                         with sqlite3.connect(DB_PATH) as conn:
                             cursor = conn.cursor()
-                            cursor.execute(
-                                """
-                                UPDATE leads
-                                SET receiver_name=?, child_name=?, father_name=?, phone=?,
-                                    condition=?, city=?, visit_date=?, followup_date=?, notes=?, status=?, fee_amount=?, doctor_name=?
-                                WHERE id=?
-                                """,
-                                (
-                                    e_receiver_name,
-                                    e_child_name,
-                                    e_father_name,
-                                    e_phone,
-                                    e_condition,
-                                    e_city,
-                                    str(e_visit_date),
-                                    str(e_followup_date),
-                                    e_notes,
-                                    e_status,
-                                    e_fee,
-                                    e_doctor_name,
-                                    selected_id,
-                                ),
-                            )
+                            cursor.execute("UPDATE leads SET notes=? WHERE id=?", (updated_note, p_row['id']))
                             conn.commit()
-                        st.success(
-                            f"ID {selected_id} ka record update ho gaya hai!"
-                        )
+                        st.success("Note Saved!")
                         st.rerun()
-            else:
-                st.info("Update karne ke liye koi record nahi hai.")
 
-        # -------- TAB 4: REPORTS --------
-        with tab4:
-            st.subheader("📈 Zaroori Reports aur Analysis")
-            if not df.empty:
-                rep_col1, rep_col2 = st.columns(2)
-                with rep_col1:
-                    st.markdown("### 📅 Date-wise Visit Report")
-                    selected_visit_date = st.date_input(
-                        "Clinic Visit Date chunein:", value=datetime.today()
-                    )
-                    v_str = str(selected_visit_date)
-                    v_filtered = df[df["visit_date"] == v_str]
-                    st.write(
-                        f"**Total Patients Scheduled ({v_str}):** {len(v_filtered)}"
-                    )
-                    if not v_filtered.empty:
-                        st.dataframe(v_filtered, use_container_width=True)
-                    else:
-                        st.info("Is tarikh ko koi visit scheduled nahi hai.")
-
-                with rep_col2:
-                    st.markdown("### 📞 Follow-up Report")
-                    selected_follow_date = st.date_input(
-                        "Follow-up Date chunein:",
-                        value=datetime.today(),
-                        key="follow_date_picker",
-                    )
-                    f_str = str(selected_follow_date)
-                    f_filtered = df[df["followup_date"] == f_str]
-                    st.write(
-                        f"**Total Follow-ups Due ({f_str}):** {len(f_filtered)}"
-                    )
-                    if not f_filtered.empty:
-                        st.dataframe(f_filtered, use_container_width=True)
-                    else:
-                        st.info(
-                            "Is tarikh ko koi follow-up scheduled nahi hai."
-                        )
-
-                st.markdown("---")
-                st.markdown("### 🏙️ City-wise Report & Analysis")
-                city_col1, city_col2 = st.columns([1, 2])
-                with city_col1:
-                    city_counts = df["city"].value_counts().reset_index()
-                    city_counts.columns = ["City", "Kul Bachche"]
-                    st.dataframe(city_counts, use_container_width=True)
-                with city_col2:
-                    cities_list = [
-                        str(c)
-                        for c in df["city"].dropna().unique()
-                        if str(c).strip()
-                    ]
-                    if cities_list:
-                        selected_city = st.selectbox(
-                            "City chunein:", ["Sabhi Cities"] + cities_list
-                        )
-                        city_filtered_df = (
-                            df
-                            if selected_city == "Sabhi Cities"
-                            else df[df["city"] == selected_city]
-                        )
-                        st.dataframe(city_filtered_df, use_container_width=True)
-                    else:
-                        st.info("Koi city data available nahi hai.")
-            else:
-                st.info("Reports dekhne ke liye koi data nahi hai.")
-
-        # -------- TAB 5: FOLLOW-UP TRACKER --------
-        with tab5:
-            st.subheader("📅 Active Follow-up Tracker")
-            if not df.empty:
-                f_status = st.radio(
-                    "Filter Follow-ups:",
-                    ["Overdue", "Aaj Ke", "Agami (Upcoming)"],
-                    horizontal=True,
-                )
-
-                df["followup_date_dt"] = pd.to_datetime(
-                    df["followup_date"], errors="coerce"
-                ).dt.date
-                today_dt = datetime.today().date()
-
-                if f_status == "Overdue":
-                    tracker_df = df[df["followup_date_dt"] < today_dt]
-                elif f_status == "Aaj Ke":
-                    tracker_df = df[df["followup_date_dt"] == today_dt]
-                else:
-                    tracker_df = df[df["followup_date_dt"] > today_dt]
-
-                st.write(f"**Kul Records Found:** {len(tracker_df)}")
-
-                if not tracker_df.empty:
-                    for _, row in tracker_df.iterrows():
-                        with st.container():
-                            c1, c2, c3 = st.columns([3, 2, 1])
-                            with c1:
-                                st.markdown(
-                                    f"**{row['child_name']}** (Pita: {row['father_name'] or 'N/A'})"
-                                )
-                                st.caption(
-                                    f"Phone: {row['phone']} | City: {row['city'] or 'N/A'} | Status: {row['status']}"
-                                )
-                            with c2:
-                                st.markdown(
-                                    f"🗓️ **Follow-up Date:** {row['followup_date']}"
-                                )
-                                st.caption(
-                                    f"Note: {row['notes'] or 'Koi note nahi'}"
-                                )
-                            with c3:
-                                wa_link = whatsapp_link(
-                                    row["phone"],
-                                    f"Namaste, {row['child_name']} ke follow-up ke baare mein reminder call/msg hai.",
-                                )
-                                if wa_link:
-                                    st.link_button(
-                                        "💬 WhatsApp",
-                                        wa_link,
-                                        use_container_width=True,
-                                    )
-                            st.divider()
-                else:
-                    st.success(
-                        "Is category mein koi follow-up records nahi hain."
-                    )
-            else:
-                st.info("Follow-up track karne ke liye koi data nahi hai.")
-
-        # -------- TAB 6: DELETE RECORD --------
-        with tab6:
-            st.subheader("🗑️ Patient Record Hatayein")
-            st.warning(
-                "⚠️ Dhyan den: Yahan se delete kiya gaya record permanently hat jayega."
-            )
-
-            if not df.empty:
-                delete_options = {
-                    f"ID {row['id']} - {row['child_name']} ({row['phone']})": row[
-                        "id"
-                    ]
-                    for _, row in df.iterrows()
-                }
-                selected_del_label = st.selectbox(
-                    "Delete karne ke liye record chunein:",
-                    list(delete_options.keys()),
-                )
-                del_id = delete_options[selected_del_label]
-
-                if st.button("🗑️ Permanently Delete Karein", type="primary"):
-                    with sqlite3.connect(DB_PATH) as conn:
-                        cursor = conn.cursor()
-                        cursor.execute(
-                            "DELETE FROM leads WHERE id=?", (del_id,)
-                        )
-                        conn.commit()
-                    st.success(
-                        f"Record ID {del_id} safalpurvak delete ho gaya hai!"
-                    )
-                    st.rerun()
-            else:
-                st.info("Delete karne ke liye koi record nahi hai.")
+                with col_p3:
+                    if wa_btn_url:
+                        st.link_button("💬 WhatsApp", wa_btn_url, use_container_width=True, type="primary")
+                st.divider()
+        else:
+            st.success("🎉 Aaj ke liye koi pending follow-up nahi hai!")
 
     # ==========================================================
-    # STAFF / RECEIVER VIEW
+    # TAB 2: ANALYTICS & ADVANCED REPORTS (NEW)
     # ==========================================================
-    else:
-        st.subheader("📋 Patient Entries & Quick Follow-up Tracker")
+    with tab_reports:
+        st.markdown("## 📊 Clinic Analytics & Business Reports")
+        
+        if df.empty:
+            st.info("Pehle kuch records entry karein, phir reports yahan dikhenge.")
+        else:
+            # Row 1: Condition Distribution & Lead Conversion
+            col_rep1, col_rep2 = st.columns(2)
 
-        tab_s1, tab_s2 = st.tabs(
-            ["📋 Meri/Sabhi Entries", "📞 Today's Follow-ups"]
-        )
+            with col_rep1:
+                st.markdown("### 2️⃣ Condition-wise Patient Distribution")
+                cond_counts = df["condition"].value_counts().reset_index()
+                cond_counts.columns = ["Condition", "Patient Count"]
+                fig_cond = px.pie(
+                    cond_counts, 
+                    names="Condition", 
+                    values="Patient Count", 
+                    hole=0.4,
+                    color_discrete_sequence=px.colors.qualitative.Pastel
+                )
+                fig_cond.update_layout(margin=dict(t=20, b=20, l=10, r=10))
+                st.plotly_chart(fig_cond, use_container_width=True)
 
-        with tab_s1:
-            st.markdown("#### Patient Records")
-            search_query_staff = st.text_input(
-                "🔍 Search (Naam, Phone, ya City se):"
-            )
+            with col_rep2:
+                st.markdown("### 3️⃣ Lead Conversion & Status Tracking")
+                status_counts = df["status"].value_counts().reset_index()
+                status_counts.columns = ["Status", "Count"]
+                fig_status = px.bar(
+                    status_counts, 
+                    x="Status", 
+                    y="Count", 
+                    color="Status",
+                    text_auto=True,
+                    color_discrete_map={"New Lead": "#38bdf8", "In Treatment": "#facc15", "Completed": "#4ade80"}
+                )
+                fig_status.update_layout(showlegend=False, margin=dict(t=20, b=20, l=10, r=10))
+                st.plotly_chart(fig_status, use_container_width=True)
 
-            filtered_df_staff = df.copy()
-            if search_query_staff:
-                filtered_df_staff = df[
-                    df["child_name"].str.contains(
-                        search_query_staff, case=False, na=False
-                    )
-                    | df["phone"].str.contains(
-                        search_query_staff, case=False, na=False
-                    )
-                    | df["city"].str.contains(
-                        search_query_staff, case=False, na=False
-                    )
-                ]
+            st.markdown("---")
 
-            st.dataframe(
-                filtered_df_staff, use_container_width=True, height=400
-            )
+            # Row 2: Doctor/Staff Performance & Location Density
+            col_rep3, col_rep4 = st.columns(2)
 
-        with tab_s2:
-            st.markdown("#### 📞 Aaj Ke Due Follow-ups")
-            due_today_staff = df[df["followup_date"] == today_str]
+            with col_rep3:
+                st.markdown("### 4️⃣ Doctor & Staff Workload Summary")
+                st.caption("Patients assigned per Doctor")
+                doc_summary = df["doctor_name"].fillna("Unassigned").value_counts().reset_index()
+                doc_summary.columns = ["Doctor Name", "Total Patients"]
+                st.dataframe(doc_summary, use_container_width=True, hide_index=True)
 
-            if not due_today_staff.empty:
-                for _, row in due_today_staff.iterrows():
-                    with st.container():
-                        col_a, col_b = st.columns([3, 1])
-                        with col_a:
-                            st.markdown(
-                                f"**{row['child_name']}** — {row['phone']}"
-                            )
-                            st.caption(
-                                f"Condition: {row['condition']} | City: {row['city']} | Notes: {row['notes']}"
-                            )
-                        with col_b:
-                            wa_url_s = whatsapp_link(
-                                row["phone"],
-                                f"Namaste, {row['child_name']} ke clinic visit ke baare mein updates lene the.",
-                            )
-                            if wa_url_s:
-                                st.link_button(
-                                    "💬 Message",
-                                    wa_url_s,
-                                    use_container_width=True,
-                                )
-                        st.divider()
-            else:
-                st.success("Aaj ke liye koi pending follow-up nahi hai! 🎉")
+                st.caption("Entries made by Receiver/Staff")
+                rec_summary = df["receiver_name"].value_counts().reset_index()
+                rec_summary.columns = ["Staff/Receiver Name", "Entries Handled"]
+                st.dataframe(rec_summary, use_container_width=True, hide_index=True)
+
+            with col_rep4:
+                st.markdown("### 5️⃣ City / Location Density Report")
+                city_counts = df["city"].fillna("Unknown").value_counts().reset_index()
+                city_counts.columns = ["City", "Patient Count"]
+                fig_city = px.bar(
+                    city_counts, 
+                    x="City", 
+                    y="Patient Count", 
+                    color_discrete_sequence=["#818cf8"],
+                    text_auto=True
+                )
+                fig_city.update_layout(margin=dict(t=20, b=20, l=10, r=10))
+                st.plotly_chart(fig_city, use_container_width=True)
