@@ -43,10 +43,18 @@ st.markdown(
         line-height: 1.2 !important;
         margin: 0 !important;
     }
+    .card {
+        background-color: #ffffff !important;
+        color: #0f172a !important;
+        padding: 18px 20px !important;
+        border-radius: 14px !important;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.1) !important;
+        margin-bottom: 14px !important;
+        border: 1px solid #cbd5e1 !important;
+    }
     .badge-new { background:#e0f2fe !important; color:#0369a1 !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
     .badge-treatment { background:#fef9c3 !important; color:#854d0e !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
     .badge-completed { background:#dcfce7 !important; color:#166534 !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
-    .badge-risk { background:#fee2e2 !important; color:#991b1b !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -84,6 +92,18 @@ def whatsapp_link(phone, message=""):
         return None
     return f"https://wa.me/{digits}" + (f"?text={quote(message)}" if message else "")
 
+def status_badge(status):
+    cls = {"New Lead": "badge-new", "In Treatment": "badge-treatment", "Completed": "badge-completed"}.get(status, "badge-new")
+    return f'<span class="{cls}">{status}</span>'
+
+def custom_metric(label, value):
+    return f"""
+    <div class="metric-card">
+        <span class="metric-label">{label}</span>
+        <h2 class="metric-value">{value}</h2>
+    </div>
+    """
+
 # ==========================================================
 # 2. DATABASE INITIALIZATION
 # ==========================================================
@@ -112,6 +132,7 @@ def init_db():
             """
         )
         
+        # Check for dob column
         cursor.execute("PRAGMA table_info(leads)")
         existing_cols = [row[1] for row in cursor.fetchall()]
         if "dob" not in existing_cols:
@@ -229,181 +250,90 @@ else:
     st.title("🏥 Normal Child Clinic — CRM Dashboard")
     st.caption(f"Aaj: {datetime.today().strftime('%d %B %Y')}")
 
-    # Navigation Tabs
-    tab_dashboard, tab_reports = st.tabs(["📋 Main Dashboard & Action Panel", "📊 Analytics & Advanced Reports"])
-
-    # ==========================================================
-    # TAB 1: DASHBOARD & QUICK ACTIONS
-    # ==========================================================
-    with tab_dashboard:
-        if not df.empty:
-            df["followup_dt"] = pd.to_datetime(df["followup_date"], errors="coerce").dt.date
-            
-            # OVERDUE RED ALERT
-            overdue_df = df[df["followup_dt"] < today_dt]
-            if not overdue_df.empty:
-                st.error(f"🚨 **OVERDUE ALERT:** {len(overdue_df)} Patients ke follow-ups choot gaye hain!")
-
-            # BIRTHDAY ALERT
-            if "dob" in df.columns:
-                df["dob_clean"] = pd.to_datetime(df["dob"], errors="coerce")
-                bday_today = df[(df["dob_clean"].dt.month == today_dt.month) & (df["dob_clean"].dt.day == today_dt.day)]
-                if not bday_today.empty:
-                    st.balloons()
-                    st.info(f"🎈 **HAPPY BIRTHDAY!** Aaj {len(bday_today)} child(ren) ka birthday hai!")
-                    for _, b_row in bday_today.iterrows():
-                        b_msg = f"Normal Child Clinic ki taraf se {b_row['child_name']} ko Janamdin ki bohot bohot shubhkamnayein! 🎂🎉"
-                        b_url = whatsapp_link(b_row['phone'], b_msg)
-                        c_b1, c_b2 = st.columns([3, 1])
-                        c_b1.write(f"🎂 **{b_row['child_name']}** (Pita: {b_row['father_name'] or '—'})")
-                        if b_url:
-                            c_b2.link_button("🎉 Send Wish", b_url, use_container_width=True)
-
-            # DROPOUT RISK ALERT
-            thirty_days_ago = today_dt - timedelta(days=30)
-            dropout_df = df[
-                (df["status"] != "Completed") & 
-                (df["followup_dt"].notna()) & 
-                (df["followup_dt"] < thirty_days_ago)
-            ]
-
-            if not dropout_df.empty:
-                st.warning(f"⚠️ **DROP-OUT RISK ALERT:** {len(dropout_df)} patients 30+ dino se inactive hain!")
-
-        st.markdown("---")
-
-        # DROPOUT RECOVERY EXPANDER
-        if not df.empty and not dropout_df.empty:
-            with st.expander("🚨 View & Re-engage Drop-out Risk Patients (30+ Days Inactive)", expanded=False):
-                for _, d_row in dropout_df.iterrows():
-                    col_d1, col_d2, col_d3 = st.columns([2.5, 2, 1.5])
-                    with col_d1:
-                        st.markdown(f"**🧒 {d_row['child_name']}** <span class='badge-risk'>Lapsed Patient</span>", unsafe_allow_html=True)
-                        st.caption(f"📱 {d_row['phone']} | 📍 {d_row['city'] or 'N/A'}")
-                    with col_d2:
-                        st.markdown(f"🩺 **Condition:** {d_row['condition']}")
-                        st.caption(f"🗓️ Last Follow-up Due: **{d_row['followup_date']}**")
-                    with col_d3:
-                        re_engage_msg = f"Namaste {d_row['father_name'] or ''} ji, Normal Child Clinic se doctor ka message hai. Humne notice kiya ki {d_row['child_name']} ki regular sessions beech me ruk gayi hain. Treatment continuous rakhne se hi behtar improvement aati hai. Kripya humse contact karke agli visit schedule karein."
-                        re_wa_url = whatsapp_link(d_row["phone"], re_engage_msg)
-                        if re_wa_url:
-                            st.link_button("🔄 Re-engage WhatsApp", re_wa_url, use_container_width=True)
-                    st.divider()
-
-        # ACTION PANEL
-        st.markdown("### 💬 Quick Follow-up Action Panel")
-        template_option = st.selectbox(
-            "📱 WhatsApp Message Template Chunein:",
-            ["General Follow-up", "Appointment Reminder", "Reports Ready", "Custom Message"]
-        )
-
-        due_today_list = df[df["followup_date"] == today_str] if not df.empty else pd.DataFrame()
-
-        if not due_today_list.empty:
-            for idx, p_row in due_today_list.iterrows():
-                if template_option == "General Follow-up":
-                    msg = f"Namaste {p_row['father_name'] or ''} ji, Normal Child Clinic se follow-up call/msg hai. Bachche {p_row['child_name']} ki health kaisi hai?"
-                elif template_option == "Appointment Reminder":
-                    msg = f"Namaste {p_row['father_name'] or ''} ji, Reminding about {p_row['child_name']}'s visit scheduled at Normal Child Clinic."
-                elif template_option == "Reports Ready":
-                    msg = f"Namaste, {p_row['child_name']} ki clinic reports ready hain. Kripya clinic se collect kar lein."
-                else:
-                    msg = f"Namaste {p_row['father_name'] or ''} ji, Normal Child Clinic se contact kar rahe hain."
-
-                wa_btn_url = whatsapp_link(p_row["phone"], msg)
-
-                col_p1, col_p2, col_p3 = st.columns([2, 2, 1.5])
-                with col_p1:
-                    st.markdown(f"**🧒 {p_row['child_name']}** (Pita: {p_row['father_name'] or '—'})")
-                    st.caption(f"📱 {p_row['phone']} | 📍 {p_row['city'] or 'N/A'}")
-                
-                with col_p2:
-                    st.caption(f"📝 Current Note: {p_row['notes'] or 'N/A'}")
-                    new_quick_note = st.text_input("Naya Remark likhein:", key=f"note_input_{p_row['id']}", placeholder="+ Add note...")
-                    if st.button("Save Note", key=f"save_note_{p_row['id']}"):
-                        updated_note = (p_row['notes'] or "") + f" | [{today_str}]: " + new_quick_note
-                        with sqlite3.connect(DB_PATH) as conn:
-                            cursor = conn.cursor()
-                            cursor.execute("UPDATE leads SET notes=? WHERE id=?", (updated_note, p_row['id']))
-                            conn.commit()
-                        st.success("Note Saved!")
-                        st.rerun()
-
-                with col_p3:
-                    if wa_btn_url:
-                        st.link_button("💬 WhatsApp", wa_btn_url, use_container_width=True, type="primary")
-                st.divider()
-        else:
-            st.success("🎉 Aaj ke liye koi pending follow-up nahi hai!")
-
-    # ==========================================================
-    # TAB 2: ANALYTICS & ADVANCED REPORTS (NEW)
-    # ==========================================================
-    with tab_reports:
-        st.markdown("## 📊 Clinic Analytics & Business Reports")
+    if not df.empty:
+        df["followup_dt"] = pd.to_datetime(df["followup_date"], errors="coerce").dt.date
         
-        if df.empty:
-            st.info("Pehle kuch records entry karein, phir reports yahan dikhenge.")
-        else:
-            # Row 1: Condition Distribution & Lead Conversion
-            col_rep1, col_rep2 = st.columns(2)
+        # --------------------------------------------------
+        # FEATURE 3: OVERDUE RED ALERT BOX
+        # --------------------------------------------------
+        overdue_df = df[df["followup_dt"] < today_dt]
+        if not overdue_df.empty:
+            st.error(f"🚨 **OVERDUE ALERT:** {len(overdue_df)} Patients ke follow-ups choot gaye hain! Kripya neeche tracker me check karein.")
 
-            with col_rep1:
-                st.markdown("### 2️⃣ Condition-wise Patient Distribution")
-                cond_counts = df["condition"].value_counts().reset_index()
-                cond_counts.columns = ["Condition", "Patient Count"]
-                fig_cond = px.pie(
-                    cond_counts, 
-                    names="Condition", 
-                    values="Patient Count", 
-                    hole=0.4,
-                    color_discrete_sequence=px.colors.qualitative.Pastel
-                )
-                fig_cond.update_layout(margin=dict(t=20, b=20, l=10, r=10))
-                st.plotly_chart(fig_cond, use_container_width=True)
+        # --------------------------------------------------
+        # FEATURE 5: TODAY'S BIRTHDAY ALERT
+        # --------------------------------------------------
+        if "dob" in df.columns:
+            df["dob_clean"] = pd.to_datetime(df["dob"], errors="coerce")
+            bday_today = df[(df["dob_clean"].dt.month == today_dt.month) & (df["dob_clean"].dt.day == today_dt.day)]
+            if not bday_today.empty:
+                st.balloons()
+                st.info(f"🎈 **HAPPY BIRTHDAY!** Aaj {len(bday_today)} child(ren) ka birthday hai!")
+                for _, b_row in bday_today.iterrows():
+                    b_msg = f"Normal Child Clinic ki taraf se {b_row['child_name']} ko Janamdin ki bohot bohot shubhkamnayein! 🎂🎉"
+                    b_url = whatsapp_link(b_row['phone'], b_msg)
+                    c_b1, c_b2 = st.columns([3, 1])
+                    c_b1.write(f"🎂 **{b_row['child_name']}** (Pita: {b_row['father_name'] or '—'})")
+                    if b_url:
+                        c_b2.link_button("🎉 Send Wish", b_url, use_container_width=True)
 
-            with col_rep2:
-                st.markdown("### 3️⃣ Lead Conversion & Status Tracking")
-                status_counts = df["status"].value_counts().reset_index()
-                status_counts.columns = ["Status", "Count"]
-                fig_status = px.bar(
-                    status_counts, 
-                    x="Status", 
-                    y="Count", 
-                    color="Status",
-                    text_auto=True,
-                    color_discrete_map={"New Lead": "#38bdf8", "In Treatment": "#facc15", "Completed": "#4ade80"}
-                )
-                fig_status.update_layout(showlegend=False, margin=dict(t=20, b=20, l=10, r=10))
-                st.plotly_chart(fig_status, use_container_width=True)
+    st.markdown("---")
 
-            st.markdown("---")
+    # Quick Action Panel Tab
+    st.markdown("### 💬 Quick Follow-up Action Panel")
+    
+    # --------------------------------------------------
+    # FEATURE 2: MESSAGE TEMPLATES SELECTION
+    # --------------------------------------------------
+    template_option = st.selectbox(
+        "📱 WhatsApp Message Template Chunein:",
+        [
+            "General Follow-up",
+            "Appointment Reminder",
+            "Reports Ready",
+            "Custom Message"
+        ]
+    )
 
-            # Row 2: Doctor/Staff Performance & Location Density
-            col_rep3, col_rep4 = st.columns(2)
+    due_today_list = df[df["followup_date"] == today_str] if not df.empty else pd.DataFrame()
 
-            with col_rep3:
-                st.markdown("### 4️⃣ Doctor & Staff Workload Summary")
-                st.caption("Patients assigned per Doctor")
-                doc_summary = df["doctor_name"].fillna("Unassigned").value_counts().reset_index()
-                doc_summary.columns = ["Doctor Name", "Total Patients"]
-                st.dataframe(doc_summary, use_container_width=True, hide_index=True)
+    if not due_today_list.empty:
+        for idx, p_row in due_today_list.iterrows():
+            # Template Message Logic
+            if template_option == "General Follow-up":
+                msg = f"Namaste {p_row['father_name'] or ''} ji, Normal Child Clinic se follow-up call/msg hai. Bachche {p_row['child_name']} ki health kaisi hai?"
+            elif template_option == "Appointment Reminder":
+                msg = f"Namaste {p_row['father_name'] or ''} ji, Reminding about {p_row['child_name']}'s visit scheduled at Normal Child Clinic."
+            elif template_option == "Reports Ready":
+                msg = f"Namaste, {p_row['child_name']} ki clinic reports ready hain. Kripya clinic se collect kar lein."
+            else:
+                msg = f"Namaste {p_row['father_name'] or ''} ji, Normal Child Clinic se contact kar rahe hain."
 
-                st.caption("Entries made by Receiver/Staff")
-                rec_summary = df["receiver_name"].value_counts().reset_index()
-                rec_summary.columns = ["Staff/Receiver Name", "Entries Handled"]
-                st.dataframe(rec_summary, use_container_width=True, hide_index=True)
+            wa_btn_url = whatsapp_link(p_row["phone"], msg)
 
-            with col_rep4:
-                st.markdown("### 5️⃣ City / Location Density Report")
-                city_counts = df["city"].fillna("Unknown").value_counts().reset_index()
-                city_counts.columns = ["City", "Patient Count"]
-                fig_city = px.bar(
-                    city_counts, 
-                    x="City", 
-                    y="Patient Count", 
-                    color_discrete_sequence=["#818cf8"],
-                    text_auto=True
-                )
-                fig_city.update_layout(margin=dict(t=20, b=20, l=10, r=10))
-                st.plotly_chart(fig_city, use_container_width=True)
+            col_p1, col_p2, col_p3 = st.columns([2, 2, 1.5])
+            with col_p1:
+                st.markdown(f"**🧒 {p_row['child_name']}** (Pita: {p_row['father_name'] or '—'})")
+                st.caption(f"📱 {p_row['phone']} | 📍 {p_row['city'] or 'N/A'}")
+            
+            # --------------------------------------------------
+            # FEATURE 4: QUICK NOTE UPDATER INLINE
+            # --------------------------------------------------
+            with col_p2:
+                st.caption(f"📝 Current Note: {p_row['notes'] or 'N/A'}")
+                new_quick_note = st.text_input("Naya Remark likhein:", key=f"note_input_{p_row['id']}", placeholder="+ Add note...")
+                if st.button("Save Note", key=f"save_note_{p_row['id']}"):
+                    updated_note = (p_row['notes'] or "") + f" | [{today_str}]: " + new_quick_note
+                    with sqlite3.connect(DB_PATH) as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("UPDATE leads SET notes=? WHERE id=?", (updated_note, p_row['id']))
+                        conn.commit()
+                    st.success("Note Saved!")
+                    st.rerun()
+
+            with col_p3:
+                if wa_btn_url:
+                    st.link_button("💬 WhatsApp", wa_btn_url, use_container_width=True, type="primary")
+            st.divider()
+    else:
+        st.success("🎉 Aaj ke liye koi pending follow-up nahi hai!")
