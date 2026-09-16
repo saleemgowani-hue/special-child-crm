@@ -158,6 +158,7 @@ CHILD_COLUMNS = [
     "severity",
     "referral_source",
     "status",
+    "branch_id",
     "created_by",
     "created_at",
 ]
@@ -199,6 +200,7 @@ MERGED_COLUMNS = [
     "severity",
     "referral_source",
     "status",
+    "branch_id",
     "receiver_name",
     "child_created_at",
 ]
@@ -414,6 +416,50 @@ def init_db():
             """
         )
 
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS branches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                city TEXT,
+                address TEXT,
+                phone TEXT,
+                created_at TEXT
+            )
+            """
+        )
+
+        # Defensive column additions for DBs created before multi-branch support.
+        cursor.execute("PRAGMA table_info(children)")
+        if "branch_id" not in [row[1] for row in cursor.fetchall()]:
+            cursor.execute("ALTER TABLE children ADD COLUMN branch_id INTEGER")
+        cursor.execute("PRAGMA table_info(users)")
+        if "branch_id" not in [row[1] for row in cursor.fetchall()]:
+            cursor.execute("ALTER TABLE users ADD COLUMN branch_id INTEGER")
+
+        cursor.execute("SELECT COUNT(*) FROM branches")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute(
+                "INSERT INTO branches (name, city, address, phone, created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    "Main Branch",
+                    None,
+                    None,
+                    None,
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+        cursor.execute("SELECT id FROM branches ORDER BY id LIMIT 1")
+        default_branch_id = cursor.fetchone()[0]
+        cursor.execute(
+            "UPDATE children SET branch_id=? WHERE branch_id IS NULL",
+            (default_branch_id,),
+        )
+        cursor.execute(
+            "UPDATE users SET branch_id=? WHERE branch_id IS NULL AND role != 'HR Admin'",
+            (default_branch_id,),
+        )
+
         conn.commit()
 
 
@@ -427,6 +473,8 @@ for key, default in {
     "username": "",
     "user_role": "",
     "user_name": "",
+    "user_branch_id": None,
+    "active_branch_id": None,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -457,7 +505,7 @@ def login_user(username, password):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT username, name, role, password FROM users WHERE username=?",
+            "SELECT username, name, role, password, branch_id FROM users WHERE username=?",
             (username,),
         )
         row = cursor.fetchone()
@@ -469,17 +517,17 @@ def login_user(username, password):
                 (hash_password(password), row[0]),
             )
             conn.commit()
-        return (row[0], row[1], row[2])
+        return (row[0], row[1], row[2], row[4])
 
 
-def add_user(username, password, name, role):
+def add_user(username, password, name, role, branch_id=None):
     hashed_pswd = hash_password(password)
     try:
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO users(username, password, name, role) VALUES (?,?,?,?)",
-                (username, hashed_pswd, name, role),
+                "INSERT INTO users(username, password, name, role, branch_id) VALUES (?,?,?,?,?)",
+                (username, hashed_pswd, name, role, branch_id),
             )
             conn.commit()
         return True
@@ -856,6 +904,7 @@ if not st.session_state["logged_in"]:
                         st.session_state["username"] = result[0]
                         st.session_state["user_name"] = result[1]
                         st.session_state["user_role"] = result[2]
+                        st.session_state["user_branch_id"] = result[3]
                         st.success(f"Swagat hai, {result[1]}!")
                         st.rerun()
                     else:
@@ -866,10 +915,17 @@ if not st.session_state["logged_in"]:
                 "Yahan sirf Staff/Receiver account bante hain. HR Admin account "
                 "sirf ek existing HR Admin hi 'Manage Users' se bana sakta hai."
             )
+            with sqlite3.connect(DB_PATH) as conn:
+                signup_branches_df = pd.read_sql(
+                    "SELECT id, name FROM branches ORDER BY name", conn
+                )
             with st.form("signup_form"):
                 new_name = st.text_input("Pura Naam")
                 new_username = st.text_input("Username")
                 new_password = st.text_input("Password", type="password")
+                signup_branch_name = st.selectbox(
+                    "Branch", signup_branches_df["name"].tolist()
+                )
                 signup_btn = st.form_submit_button(
                     "Account Banayein", use_container_width=True
                 )
@@ -881,11 +937,19 @@ if not st.session_state["logged_in"]:
                                 "Password kam se kam 8 characters ka hona chahiye."
                             )
                         else:
+                            signup_branch_id = int(
+                                signup_branches_df.loc[
+                                    signup_branches_df["name"]
+                                    == signup_branch_name,
+                                    "id",
+                                ].iloc[0]
+                            )
                             success = add_user(
                                 new_username,
                                 new_password,
                                 new_name,
                                 "Staff / Receiver",
+                                signup_branch_id,
                             )
                             if success:
                                 log_action(
@@ -912,15 +976,48 @@ else:
         st.session_state["username"] = ""
         st.session_state["user_role"] = ""
         st.session_state["user_name"] = ""
+        st.session_state["user_branch_id"] = None
+        st.session_state["active_branch_id"] = None
         st.rerun()
+
+    with sqlite3.connect(DB_PATH) as conn:
+        branches_df = pd.read_sql(
+            "SELECT id, name, city FROM branches ORDER BY name", conn
+        )
+    branch_name_by_id = dict(zip(branches_df["id"], branches_df["name"]))
+
+    if st.session_state["user_role"] == "HR Admin":
+        st.sidebar.markdown("---")
+        branch_filter_options = ["🏢 Sabhi Branches"] + [
+            f"{row['name']}" for _, row in branches_df.iterrows()
+        ]
+        branch_filter_ids = [None] + branches_df["id"].tolist()
+        chosen_branch_label = st.sidebar.selectbox(
+            "🏢 Branch Filter", branch_filter_options, key="branch_filter_select"
+        )
+        st.session_state["active_branch_id"] = branch_filter_ids[
+            branch_filter_options.index(chosen_branch_label)
+        ]
+        active_branch_id = st.session_state["active_branch_id"]
+    else:
+        active_branch_id = st.session_state["user_branch_id"]
+        if active_branch_id:
+            st.sidebar.caption(
+                f"🏢 Branch: {branch_name_by_id.get(active_branch_id, '—')}"
+            )
 
     st.sidebar.markdown("---")
     st.sidebar.header("➕ Patient Entry")
 
     with sqlite3.connect(DB_PATH) as conn:
+        lookup_query = "SELECT id, child_name, phone, status FROM children"
+        lookup_params = ()
+        if active_branch_id:
+            lookup_query += " WHERE branch_id=?"
+            lookup_params = (active_branch_id,)
+        lookup_query += " ORDER BY child_name"
         children_lookup_df = pd.read_sql(
-            "SELECT id, child_name, phone, status FROM children ORDER BY child_name",
-            conn,
+            lookup_query, conn, params=lookup_params
         )
 
     entry_mode = st.sidebar.radio(
@@ -932,6 +1029,22 @@ else:
     if entry_mode == "🧒 Naya Child Register Karein":
         with st.sidebar.form("new_child_form", clear_on_submit=True):
             st.markdown("**Child Details**")
+            if st.session_state["user_role"] == "HR Admin":
+                branch_names = branches_df["name"].tolist()
+                branch_ids = branches_df["id"].tolist()
+                default_branch_idx = (
+                    branch_ids.index(active_branch_id)
+                    if active_branch_id in branch_ids
+                    else 0
+                )
+                chosen_branch_name = st.selectbox(
+                    "Branch", branch_names, index=default_branch_idx
+                )
+                form_branch_id = branch_ids[
+                    branch_names.index(chosen_branch_name)
+                ]
+            else:
+                form_branch_id = st.session_state["user_branch_id"]
             child_name = st.text_input("Bachche ka Naam *")
             dob = st.date_input(
                 "Date of Birth (optional)",
@@ -981,8 +1094,8 @@ else:
                             INSERT INTO children
                             (child_name, dob, gender, father_name, mother_name, phone,
                              alt_phone, address, city, conditions, severity,
-                             referral_source, status, created_by, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             referral_source, status, branch_id, created_by, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 child_name,
@@ -998,6 +1111,7 @@ else:
                                 severity,
                                 referral_source,
                                 status,
+                                form_branch_id,
                                 st.session_state["username"],
                                 now_iso,
                             ),
@@ -1134,16 +1248,31 @@ else:
                     st.sidebar.success("Visit safalpurvak save ho gayi!")
                     st.rerun()
 
-    # ---------- LOAD DATA ----------
+    # ---------- LOAD DATA (branch-scoped) ----------
+    branch_params = (active_branch_id,) if active_branch_id else ()
     with sqlite3.connect(DB_PATH) as conn:
         try:
             children_df = pd.read_sql(
-                "SELECT * FROM children ORDER BY id DESC", conn
+                "SELECT * FROM children"
+                + (" WHERE branch_id=?" if active_branch_id else "")
+                + " ORDER BY id DESC",
+                conn,
+                params=branch_params,
             )
         except Exception:
             children_df = pd.DataFrame(columns=CHILD_COLUMNS)
         try:
-            visits_df = pd.read_sql("SELECT * FROM visits ORDER BY id DESC", conn)
+            visits_df = pd.read_sql(
+                "SELECT * FROM visits"
+                + (
+                    " WHERE child_id IN (SELECT id FROM children WHERE branch_id=?)"
+                    if active_branch_id
+                    else ""
+                )
+                + " ORDER BY id DESC",
+                conn,
+                params=branch_params,
+            )
         except Exception:
             visits_df = pd.DataFrame(columns=VISIT_COLUMNS)
         try:
@@ -1156,13 +1285,15 @@ else:
                     v.created_at AS visit_created_at,
                     c.child_name, c.dob, c.gender, c.father_name, c.mother_name,
                     c.phone, c.alt_phone, c.address, c.city, c.conditions,
-                    c.severity, c.referral_source, c.status,
+                    c.severity, c.referral_source, c.status, c.branch_id,
                     c.created_by AS receiver_name, c.created_at AS child_created_at
                 FROM visits v
                 JOIN children c ON v.child_id = c.id
-                ORDER BY v.id DESC
-                """,
+                """
+                + ("WHERE c.branch_id=?" if active_branch_id else "")
+                + " ORDER BY v.id DESC",
                 conn,
+                params=branch_params,
             )
         except Exception:
             df = pd.DataFrame(columns=MERGED_COLUMNS)
@@ -1173,6 +1304,9 @@ else:
     for col in MERGED_COLUMNS:
         if col not in df.columns:
             df[col] = None
+
+    children_df["branch_name"] = children_df["branch_id"].map(branch_name_by_id)
+    df["branch_name"] = df["branch_id"].map(branch_name_by_id)
 
     today_str = str(datetime.today().date())
     tomorrow_str = str((datetime.today() + timedelta(days=1)).date())
@@ -1200,7 +1334,7 @@ else:
     # ROLE-BASED VIEW
     # ==========================================================
     if st.session_state["user_role"] == "HR Admin":
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
             [
                 "📋 Dashboard",
                 "🧒 Patient Profile",
@@ -1210,6 +1344,7 @@ else:
                 "🗑️ Delete Record",
                 "👥 Users & Audit Log",
                 "🎯 Therapy Goals",
+                "🏢 Branches",
             ]
         )
 
@@ -2264,6 +2399,11 @@ else:
                 with u_col1:
                     nu_name = st.text_input("Pura Naam", key="nu_name")
                     nu_username = st.text_input("Username", key="nu_username")
+                    nu_branch_name = st.selectbox(
+                        "Branch (HR Admin ke liye ignore ho jaata hai)",
+                        branches_df["name"].tolist(),
+                        key="nu_branch",
+                    )
                 with u_col2:
                     nu_password = st.text_input(
                         "Password", type="password", key="nu_password"
@@ -2281,8 +2421,22 @@ else:
                                 "Password kam se kam 8 characters ka hona chahiye."
                             )
                         else:
+                            nu_branch_id = (
+                                None
+                                if nu_role == "HR Admin"
+                                else int(
+                                    branches_df.loc[
+                                        branches_df["name"] == nu_branch_name,
+                                        "id",
+                                    ].iloc[0]
+                                )
+                            )
                             success = add_user(
-                                nu_username, nu_password, nu_name, nu_role
+                                nu_username,
+                                nu_password,
+                                nu_name,
+                                nu_role,
+                                nu_branch_id,
                             )
                             if success:
                                 log_action(
@@ -2371,6 +2525,141 @@ else:
         # -------- TAB 8: THERAPY GOALS --------
         with tab8:
             render_goals_tab(children_df)
+
+        # -------- TAB 9: BRANCHES --------
+        with tab9:
+            st.subheader("🏢 Branch Management")
+            with sqlite3.connect(DB_PATH) as conn:
+                all_branches_df = pd.read_sql(
+                    "SELECT * FROM branches ORDER BY name", conn
+                )
+                branch_child_counts = pd.read_sql(
+                    "SELECT branch_id, COUNT(*) as child_count FROM children "
+                    "GROUP BY branch_id",
+                    conn,
+                )
+                branch_user_counts = pd.read_sql(
+                    "SELECT branch_id, COUNT(*) as user_count FROM users "
+                    "WHERE branch_id IS NOT NULL GROUP BY branch_id",
+                    conn,
+                )
+            all_branches_df = all_branches_df.merge(
+                branch_child_counts, left_on="id", right_on="branch_id", how="left"
+            ).merge(
+                branch_user_counts,
+                left_on="id",
+                right_on="branch_id",
+                how="left",
+                suffixes=("", "_u"),
+            )
+            all_branches_df["child_count"] = (
+                all_branches_df["child_count"].fillna(0).astype(int)
+            )
+            all_branches_df["user_count"] = (
+                all_branches_df["user_count"].fillna(0).astype(int)
+            )
+
+            st.dataframe(
+                all_branches_df[
+                    [
+                        "id",
+                        "name",
+                        "city",
+                        "phone",
+                        "address",
+                        "child_count",
+                        "user_count",
+                    ]
+                ],
+                use_container_width=True,
+                height=220,
+            )
+
+            with st.expander("➕ Nayi Branch Add Karein"):
+                with st.form("add_branch_form", clear_on_submit=True):
+                    b_name = st.text_input("Branch Naam *")
+                    b_city = st.text_input("City")
+                    b_address = st.text_area("Address")
+                    b_phone = st.text_input("Phone")
+                    add_branch_btn = st.form_submit_button(
+                        "💾 Branch Save Karein", use_container_width=True
+                    )
+                    if add_branch_btn:
+                        if b_name:
+                            with sqlite3.connect(DB_PATH) as conn:
+                                cursor = conn.cursor()
+                                cursor.execute(
+                                    """
+                                    INSERT INTO branches
+                                    (name, city, address, phone, created_at)
+                                    VALUES (?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        b_name,
+                                        b_city,
+                                        b_address,
+                                        b_phone,
+                                        datetime.now().isoformat(
+                                            timespec="seconds"
+                                        ),
+                                    ),
+                                )
+                                new_branch_id = cursor.lastrowid
+                                conn.commit()
+                            log_action(
+                                st.session_state["username"],
+                                "CREATE",
+                                "branches",
+                                new_branch_id,
+                                b_name,
+                            )
+                            st.success("Branch add ho gayi!")
+                            st.rerun()
+                        else:
+                            st.warning("Branch Naam zaroori hai.")
+
+            st.markdown("---")
+            st.markdown("#### Branch Delete Karein")
+            if len(all_branches_df) > 1:
+                del_branch_options = {
+                    f"{row['name']} (Children: {row['child_count']}, Users: {row['user_count']})": row[
+                        "id"
+                    ]
+                    for _, row in all_branches_df.iterrows()
+                }
+                sel_del_branch = st.selectbox(
+                    "Branch chunein:", list(del_branch_options.keys())
+                )
+                del_branch_id = del_branch_options[sel_del_branch]
+                if st.button("🗑️ Branch Delete Karein", type="primary"):
+                    row = all_branches_df[
+                        all_branches_df["id"] == del_branch_id
+                    ].iloc[0]
+                    if row["child_count"] > 0 or row["user_count"] > 0:
+                        st.error(
+                            "Is branch mein children ya users hain — pehle unhe "
+                            "kisi aur branch mein move/delete karein."
+                        )
+                    else:
+                        with sqlite3.connect(DB_PATH) as conn:
+                            cursor = conn.cursor()
+                            cursor.execute(
+                                "DELETE FROM branches WHERE id=?", (del_branch_id,)
+                            )
+                            conn.commit()
+                        log_action(
+                            st.session_state["username"],
+                            "DELETE",
+                            "branches",
+                            del_branch_id,
+                            sel_del_branch,
+                        )
+                        st.success("Branch delete ho gayi!")
+                        st.rerun()
+            else:
+                st.info(
+                    "Kam se kam ek branch zaroori hai — isse delete nahi kar sakte."
+                )
 
     # ==========================================================
     # STAFF / RECEIVER VIEW
