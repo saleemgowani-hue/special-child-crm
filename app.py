@@ -172,6 +172,7 @@ VISIT_COLUMNS = [
     "id",
     "child_id",
     "visit_date",
+    "visit_time",
     "followup_date",
     "service_type",
     "doctor_name",
@@ -185,6 +186,7 @@ MERGED_COLUMNS = [
     "visit_id",
     "child_id",
     "visit_date",
+    "visit_time",
     "followup_date",
     "service_type",
     "doctor_name",
@@ -279,6 +281,7 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 child_id INTEGER NOT NULL REFERENCES children(id),
                 visit_date TEXT,
+                visit_time TEXT,
                 followup_date TEXT,
                 service_type TEXT,
                 doctor_name TEXT,
@@ -442,6 +445,11 @@ def init_db():
         cursor.execute("PRAGMA table_info(users)")
         if "branch_id" not in [row[1] for row in cursor.fetchall()]:
             cursor.execute("ALTER TABLE users ADD COLUMN branch_id INTEGER")
+
+        # Defensive column addition for DBs created before the appointment calendar.
+        cursor.execute("PRAGMA table_info(visits)")
+        if "visit_time" not in [row[1] for row in cursor.fetchall()]:
+            cursor.execute("ALTER TABLE visits ADD COLUMN visit_time TEXT")
 
         cursor.execute("SELECT COUNT(*) FROM branches")
         if cursor.fetchone()[0] == 0:
@@ -997,6 +1005,9 @@ def render_patient_profile_tab(children_df, visits_df, show_billing=True):
             pv_doctor = st.text_input("Doctor / Therapist ka Naam")
             pv_service = st.selectbox("Service Type", SERVICE_TYPES)
             pv_visit_date = st.date_input("Visit Date", value=datetime.today())
+            pv_visit_time = st.time_input(
+                "Visit Time", value=datetime.strptime("09:00", "%H:%M").time()
+            )
             pv_followup_date = st.date_input(
                 "Agli Follow-up Date", value=datetime.today() + timedelta(days=7)
             )
@@ -1018,14 +1029,15 @@ def render_patient_profile_tab(children_df, visits_df, show_billing=True):
                     cursor.execute(
                         """
                         INSERT INTO visits
-                        (child_id, visit_date, followup_date, service_type,
+                        (child_id, visit_date, visit_time, followup_date, service_type,
                          doctor_name, notes, fee_amount, payment_status,
                          created_by, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             p_id,
                             str(pv_visit_date),
+                            pv_visit_time.strftime("%H:%M"),
                             str(pv_followup_date),
                             pv_service,
                             pv_doctor,
@@ -1217,6 +1229,88 @@ def render_clinical_dashboard(df, children_df, today_str):
                 showlegend=False,
             )
             st.plotly_chart(fig2, use_container_width=True)
+
+
+def render_calendar_tab(df, key_prefix="cal"):
+    st.subheader("🗓️ Appointment Calendar")
+    st.caption(
+        "Naya appointment book karne ke liye sidebar ka 'Patient Entry' form "
+        "use karein — yahan sirf schedule dikhta hai."
+    )
+    if df.empty:
+        st.info("Koi scheduled visit nahi hai.")
+        return
+
+    col1, col2 = st.columns(2)
+    with col1:
+        cal_start = st.date_input(
+            "Start Date", value=datetime.today(), key=f"{key_prefix}_cal_start"
+        )
+    with col2:
+        cal_end = st.date_input(
+            "End Date",
+            value=datetime.today() + timedelta(days=6),
+            key=f"{key_prefix}_cal_end",
+        )
+
+    if cal_start > cal_end:
+        st.warning("Start Date, End Date se pehle honi chahiye.")
+        return
+
+    cal_df = df.copy()
+    cal_df["visit_date_dt"] = pd.to_datetime(cal_df["visit_date"], errors="coerce")
+    cal_df = cal_df.dropna(subset=["visit_date_dt"])
+    cal_df = cal_df[
+        (cal_df["visit_date_dt"].dt.date >= cal_start)
+        & (cal_df["visit_date_dt"].dt.date <= cal_end)
+    ]
+
+    if cal_df.empty:
+        st.info("Is date range mein koi appointment schedule nahi hai.")
+        return
+
+    def combine_dt(row):
+        time_str = row.get("visit_time") or "09:00"
+        try:
+            t = datetime.strptime(str(time_str), "%H:%M").time()
+        except Exception:
+            t = datetime.strptime("09:00", "%H:%M").time()
+        return datetime.combine(row["visit_date_dt"].date(), t)
+
+    cal_df["start_dt"] = cal_df.apply(combine_dt, axis=1)
+    cal_df["end_dt"] = cal_df["start_dt"] + timedelta(minutes=30)
+    cal_df["doctor_label"] = cal_df["doctor_name"].replace("", None).fillna(
+        "Unassigned"
+    )
+
+    fig = px.timeline(
+        cal_df,
+        x_start="start_dt",
+        x_end="end_dt",
+        y="doctor_label",
+        color="service_type",
+        hover_data=["child_name", "notes"],
+    )
+    fig.update_yaxes(autorange="reversed", title="Doctor / Therapist")
+    fig.update_layout(
+        height=max(300, 60 * cal_df["doctor_label"].nunique()),
+        margin=dict(t=20, b=20, l=10, r=10),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("#### 📋 Agenda")
+    agenda_df = cal_df.sort_values("start_dt")[
+        [
+            "visit_date",
+            "visit_time",
+            "child_name",
+            "phone",
+            "service_type",
+            "doctor_name",
+            "notes",
+        ]
+    ]
+    st.dataframe(agenda_df, use_container_width=True, height=280)
 
 
 # ==========================================================
@@ -1419,6 +1513,9 @@ else:
             visit_date = st.date_input(
                 "Clinic Aane ki Date", value=datetime.today()
             )
+            visit_time = st.time_input(
+                "Visit Time", value=datetime.strptime("09:00", "%H:%M").time()
+            )
             followup_date = st.date_input(
                 "Agli Follow-up Date", value=datetime.today() + timedelta(days=7)
             )
@@ -1472,14 +1569,15 @@ else:
                         cursor.execute(
                             """
                             INSERT INTO visits
-                            (child_id, visit_date, followup_date, service_type,
+                            (child_id, visit_date, visit_time, followup_date, service_type,
                              doctor_name, notes, fee_amount, payment_status,
                              created_by, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 new_child_id,
                                 str(visit_date),
+                                visit_time.strftime("%H:%M"),
                                 str(followup_date),
                                 service_type,
                                 doctor_name,
@@ -1520,6 +1618,9 @@ else:
                 service_type = st.selectbox("Service Type", SERVICE_TYPES)
                 visit_date = st.date_input(
                     "Visit Date", value=datetime.today()
+                )
+                visit_time = st.time_input(
+                    "Visit Time", value=datetime.strptime("09:00", "%H:%M").time()
                 )
                 followup_date = st.date_input(
                     "Agli Follow-up Date",
@@ -1563,14 +1664,15 @@ else:
                         cursor.execute(
                             """
                             INSERT INTO visits
-                            (child_id, visit_date, followup_date, service_type,
+                            (child_id, visit_date, visit_time, followup_date, service_type,
                              doctor_name, notes, fee_amount, payment_status,
                              created_by, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 child_id,
                                 str(visit_date),
+                                visit_time.strftime("%H:%M"),
                                 str(followup_date),
                                 service_type,
                                 doctor_name,
@@ -1637,7 +1739,7 @@ else:
             df = pd.read_sql(
                 """
                 SELECT
-                    v.id AS visit_id, v.child_id, v.visit_date, v.followup_date,
+                    v.id AS visit_id, v.child_id, v.visit_date, v.visit_time, v.followup_date,
                     v.service_type, v.doctor_name, v.notes, v.fee_amount,
                     v.payment_status, v.created_by AS visit_receiver,
                     v.created_at AS visit_created_at,
@@ -1692,7 +1794,7 @@ else:
     # ROLE-BASED VIEW
     # ==========================================================
     if st.session_state["user_role"] == "HR Admin":
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(
             [
                 "📋 Dashboard",
                 "🧒 Patient Profile",
@@ -1703,6 +1805,7 @@ else:
                 "👥 Users & Audit Log",
                 "🎯 Therapy Goals",
                 "🏢 Branches",
+                "🗓️ Appointment Calendar",
             ]
         )
 
@@ -2224,6 +2327,17 @@ else:
                             ev_visit_date = st.date_input(
                                 "Visit Date", value=v_date
                             )
+                            try:
+                                v_time = datetime.strptime(
+                                    visit_data["visit_time"], "%H:%M"
+                                ).time()
+                            except Exception:
+                                v_time = datetime.strptime(
+                                    "09:00", "%H:%M"
+                                ).time()
+                            ev_visit_time = st.time_input(
+                                "Visit Time", value=v_time
+                            )
                             ev_followup_date = st.date_input(
                                 "Agli Follow-up Date", value=f_date
                             )
@@ -2271,13 +2385,15 @@ else:
                                     """
                                     UPDATE visits
                                     SET service_type=?, doctor_name=?, visit_date=?,
-                                        followup_date=?, fee_amount=?, payment_status=?, notes=?
+                                        visit_time=?, followup_date=?, fee_amount=?,
+                                        payment_status=?, notes=?
                                     WHERE id=?
                                     """,
                                     (
                                         ev_service,
                                         ev_doctor,
                                         str(ev_visit_date),
+                                        ev_visit_time.strftime("%H:%M"),
                                         str(ev_followup_date),
                                         ev_fee,
                                         ev_payment,
@@ -2769,16 +2885,21 @@ else:
                     "Kam se kam ek branch zaroori hai — isse delete nahi kar sakte."
                 )
 
+        # -------- TAB 10: APPOINTMENT CALENDAR --------
+        with tab10:
+            render_calendar_tab(df, key_prefix="admin")
+
     # ==========================================================
     # CLINICAL VIEW (Doctor / Therapist)
     # ==========================================================
     elif st.session_state["user_role"] in CLINICAL_ROLES:
-        tab_c1, tab_c2, tab_c3, tab_c4 = st.tabs(
+        tab_c1, tab_c2, tab_c3, tab_c4, tab_c5 = st.tabs(
             [
                 "📋 Dashboard",
                 "🧒 Patient Profile",
                 "🎯 Therapy Goals",
                 "📅 Follow-up Tracker",
+                "🗓️ Appointment Calendar",
             ]
         )
         with tab_c1:
@@ -2789,6 +2910,8 @@ else:
             render_goals_tab(children_df)
         with tab_c4:
             render_followup_tracker_tab(df, key_prefix="clinical")
+        with tab_c5:
+            render_calendar_tab(df, key_prefix="clinical")
 
     # ==========================================================
     # FRONT DESK VIEW (Receptionist / legacy Staff)
@@ -2796,8 +2919,13 @@ else:
     else:
         st.subheader("📋 Patient Entries & Quick Follow-up Tracker")
 
-        tab_s1, tab_s2, tab_s3 = st.tabs(
-            ["📋 Meri/Sabhi Entries", "📞 Today's Follow-ups", "🎯 Therapy Goals"]
+        tab_s1, tab_s2, tab_s3, tab_s4 = st.tabs(
+            [
+                "📋 Meri/Sabhi Entries",
+                "📞 Today's Follow-ups",
+                "🎯 Therapy Goals",
+                "🗓️ Appointment Calendar",
+            ]
         )
 
         with tab_s1:
@@ -2856,3 +2984,6 @@ else:
 
         with tab_s3:
             render_goals_tab(children_df)
+
+        with tab_s4:
+            render_calendar_tab(df, key_prefix="frontdesk")
