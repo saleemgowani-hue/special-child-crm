@@ -1,0 +1,8 @@
+crm.db
+crm.db-journal
+uploads/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.streamlit/secrets.toml
