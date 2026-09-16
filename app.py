@@ -81,6 +81,7 @@ st.markdown(
     .badge-new { background:#e0f2fe !important; color:#0369a1 !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
     .badge-treatment { background:#fef9c3 !important; color:#854d0e !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
     .badge-completed { background:#dcfce7 !important; color:#166534 !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
+    .badge-inactive { background:#f1f5f9 !important; color:#475569 !important; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -97,7 +98,89 @@ CONDITIONS = [
     "Cerebral Palsy",
     "Other",
 ]
-STATUSES = ["New Lead", "In Treatment", "Completed"]
+SEVERITIES = ["Not Specified", "Mild", "Moderate", "Severe"]
+GENDERS = ["Male", "Female", "Other"]
+STATUSES = ["New Lead", "In Treatment", "Completed", "Inactive"]
+SERVICE_TYPES = [
+    "Consultation",
+    "Speech Therapy",
+    "Occupational Therapy",
+    "ABA Therapy",
+    "Physiotherapy",
+    "Special Education",
+    "Psychological Assessment",
+    "Follow-up Review",
+    "Other",
+]
+PAYMENT_STATUSES = ["Paid", "Partial", "Pending"]
+REFERRAL_SOURCES = [
+    "Walk-in",
+    "Doctor Referral",
+    "School / Teacher",
+    "Social Media",
+    "Friend / Family Referral",
+    "Other",
+]
+
+CHILD_COLUMNS = [
+    "id",
+    "child_name",
+    "dob",
+    "gender",
+    "father_name",
+    "mother_name",
+    "phone",
+    "alt_phone",
+    "address",
+    "city",
+    "conditions",
+    "severity",
+    "referral_source",
+    "status",
+    "created_by",
+    "created_at",
+]
+VISIT_COLUMNS = [
+    "id",
+    "child_id",
+    "visit_date",
+    "followup_date",
+    "service_type",
+    "doctor_name",
+    "notes",
+    "fee_amount",
+    "payment_status",
+    "created_by",
+    "created_at",
+]
+MERGED_COLUMNS = [
+    "visit_id",
+    "child_id",
+    "visit_date",
+    "followup_date",
+    "service_type",
+    "doctor_name",
+    "notes",
+    "fee_amount",
+    "payment_status",
+    "visit_receiver",
+    "visit_created_at",
+    "child_name",
+    "dob",
+    "gender",
+    "father_name",
+    "mother_name",
+    "phone",
+    "alt_phone",
+    "address",
+    "city",
+    "conditions",
+    "severity",
+    "referral_source",
+    "status",
+    "receiver_name",
+    "child_created_at",
+]
 
 
 # ==========================================================
@@ -138,76 +221,102 @@ def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
 
-        # Step 1: Quarantine old schema if problematic
-        known_safe_notnull = {
-            "id",
-            "receiver_name",
-            "child_name",
-            "father_name",
-            "phone",
-        }
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='leads'"
-        )
-        if cursor.fetchone():
-            cursor.execute("PRAGMA table_info(leads)")
-            table_info = cursor.fetchall()
-            problematic_cols = [
-                row[1]
-                for row in table_info
-                if row[3] == 1
-                and row[4] is None
-                and row[1] not in known_safe_notnull
-            ]
-            if problematic_cols:
-                backup_name = f"leads_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                cursor.execute(f"ALTER TABLE leads RENAME TO {backup_name}")
-
-        # Step 2: Create a fresh table
         cursor.execute(
             """
-            CREATE TABLE IF NOT EXISTS leads (
+            CREATE TABLE IF NOT EXISTS children (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                receiver_name TEXT NOT NULL,
                 child_name TEXT NOT NULL,
-                father_name TEXT NOT NULL,
+                dob TEXT,
+                gender TEXT,
+                father_name TEXT,
+                mother_name TEXT,
                 phone TEXT NOT NULL,
-                condition TEXT,
+                alt_phone TEXT,
+                address TEXT,
                 city TEXT,
-                visit_date TEXT,
-                followup_date TEXT,
-                notes TEXT,
+                conditions TEXT,
+                severity TEXT,
+                referral_source TEXT,
                 status TEXT,
-                created_at TEXT,
-                fee_amount REAL,
-                doctor_name TEXT
+                created_by TEXT,
+                created_at TEXT
             )
             """
         )
 
-        # Step 3: Ensure missing columns are added
-        required_columns = {
-            "receiver_name": "TEXT",
-            "child_name": "TEXT",
-            "father_name": "TEXT",
-            "phone": "TEXT",
-            "condition": "TEXT",
-            "city": "TEXT",
-            "visit_date": "TEXT",
-            "followup_date": "TEXT",
-            "notes": "TEXT",
-            "status": "TEXT",
-            "created_at": "TEXT",
-            "fee_amount": "REAL",
-            "doctor_name": "TEXT",
-        }
-        cursor.execute("PRAGMA table_info(leads)")
-        existing_cols = [row[1] for row in cursor.fetchall()]
-        for col_name, col_type in required_columns.items():
-            if col_name not in existing_cols:
-                cursor.execute(
-                    f"ALTER TABLE leads ADD COLUMN {col_name} {col_type}"
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                child_id INTEGER NOT NULL REFERENCES children(id),
+                visit_date TEXT,
+                followup_date TEXT,
+                service_type TEXT,
+                doctor_name TEXT,
+                notes TEXT,
+                fee_amount REAL,
+                payment_status TEXT,
+                created_by TEXT,
+                created_at TEXT
+            )
+            """
+        )
+
+        # One-time migration from the old flat "leads" table: each old row
+        # becomes a child profile plus that child's first visit.
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='leads'"
+        )
+        if cursor.fetchone():
+            cursor.execute("SELECT * FROM leads")
+            legacy_col_order = [d[0] for d in cursor.description]
+            legacy_rows = cursor.fetchall()
+            for legacy_row in legacy_rows:
+                rec = dict(zip(legacy_col_order, legacy_row))
+                created_at = rec.get("created_at") or datetime.now().isoformat(
+                    timespec="seconds"
                 )
+                cursor.execute(
+                    """
+                    INSERT INTO children
+                    (child_name, father_name, phone, city, conditions, status, created_by, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        rec.get("child_name") or "Unknown",
+                        rec.get("father_name"),
+                        rec.get("phone") or "",
+                        rec.get("city"),
+                        rec.get("condition"),
+                        rec.get("status") or "New Lead",
+                        rec.get("receiver_name"),
+                        created_at,
+                    ),
+                )
+                new_child_id = cursor.lastrowid
+                fee = rec.get("fee_amount") or 0
+                cursor.execute(
+                    """
+                    INSERT INTO visits
+                    (child_id, visit_date, followup_date, service_type, doctor_name,
+                     notes, fee_amount, payment_status, created_by, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_child_id,
+                        rec.get("visit_date"),
+                        rec.get("followup_date"),
+                        "Consultation",
+                        rec.get("doctor_name"),
+                        rec.get("notes"),
+                        fee,
+                        "Paid" if fee and fee > 0 else "Pending",
+                        rec.get("receiver_name"),
+                        created_at,
+                    ),
+                )
+            backup_name = f"leads_migrated_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            cursor.execute(f"ALTER TABLE leads RENAME TO {backup_name}")
 
         cursor.execute(
             """
@@ -320,8 +429,9 @@ def status_badge(status):
         "New Lead": "badge-new",
         "In Treatment": "badge-treatment",
         "Completed": "badge-completed",
+        "Inactive": "badge-inactive",
     }.get(status, "badge-new")
-    return f'<span class="{cls}">{status}</span>'
+    return f'<span class="{cls}">{status or "—"}</span>'
 
 
 def custom_metric(label, value):
@@ -350,6 +460,42 @@ def whatsapp_link(phone, message=""):
 def call_link(phone):
     digits = clean_phone_for_link(phone)
     return f"tel:+{digits}" if digits else None
+
+
+def calculate_age(dob_value):
+    if dob_value is None or (isinstance(dob_value, float) and pd.isna(dob_value)):
+        return None
+    try:
+        dob = datetime.strptime(str(dob_value), "%Y-%m-%d").date()
+    except Exception:
+        return None
+    today = datetime.today().date()
+    years = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+    months = (today.month - dob.month) % 12
+    if years < 0:
+        return None
+    if years == 0:
+        return f"{months} mahine"
+    return f"{years} saal"
+
+
+def explode_multivalue(series, delimiter=","):
+    items = []
+    for val in series.dropna():
+        for item in str(val).split(delimiter):
+            item = item.strip()
+            if item:
+                items.append(item)
+    return pd.Series(items, dtype="object")
+
+
+def parse_date_or_none(value):
+    if not value or (isinstance(value, float) and pd.isna(value)):
+        return None
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d").date()
+    except Exception:
+        return None
 
 
 # ==========================================================
@@ -442,101 +588,262 @@ else:
         st.rerun()
 
     st.sidebar.markdown("---")
-    st.sidebar.header("➕ Nayi Entry Jodein")
+    st.sidebar.header("➕ Patient Entry")
 
-    with st.sidebar.form("entry_form", clear_on_submit=True):
-        receiver_name = st.text_input(
-            "Call Receiver ka Naam *", value=st.session_state["user_name"]
-        )
-        child_name = st.text_input("Bachche ka Naam *")
-        father_name = st.text_input("Pita ka Naam")
-        phone = st.text_input("Mobile Number *")
-        condition = st.selectbox("Condition Chunein", CONDITIONS)
-        city = st.text_input("City (Shehar)")
-        doctor_name = st.text_input("Doctor ka Naam")
-        visit_date = st.date_input(
-            "Clinic Aane ki Date", value=datetime.today()
-        )
-        followup_date = st.date_input(
-            "Agli Follow-up Date", value=datetime.today() + timedelta(days=7)
-        )
-        notes = st.text_area("Doctor/Clinic Notes (Khaas baatein)")
-        status = st.selectbox("Status", STATUSES)
-        fee_amount = st.number_input(
-            "Fee Amount (₹)", min_value=0.0, step=100.0, value=0.0
+    with sqlite3.connect(DB_PATH) as conn:
+        children_lookup_df = pd.read_sql(
+            "SELECT id, child_name, phone, status FROM children ORDER BY child_name",
+            conn,
         )
 
-        submit_button = st.form_submit_button(
-            "💾 Record Save Karein", use_container_width=True
-        )
+    entry_mode = st.sidebar.radio(
+        "Entry Type",
+        ["🧒 Naya Child Register Karein", "📅 Existing Child ki Nayi Visit"],
+        key="entry_mode",
+    )
 
-        if submit_button:
-            if receiver_name and child_name and phone:
-                with sqlite3.connect(DB_PATH) as conn:
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        """
-                        INSERT INTO leads
-                        (receiver_name, child_name, father_name, phone, condition, city,
-                         visit_date, followup_date, notes, status, created_at, fee_amount, doctor_name)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            receiver_name,
-                            child_name,
-                            father_name,
-                            phone,
-                            condition,
-                            city,
-                            str(visit_date),
-                            str(followup_date),
-                            notes,
-                            status,
-                            datetime.now().isoformat(timespec="seconds"),
-                            fee_amount,
-                            doctor_name,
-                        ),
+    if entry_mode == "🧒 Naya Child Register Karein":
+        with st.sidebar.form("new_child_form", clear_on_submit=True):
+            st.markdown("**Child Details**")
+            child_name = st.text_input("Bachche ka Naam *")
+            dob = st.date_input(
+                "Date of Birth (optional)",
+                value=None,
+                min_value=datetime(1995, 1, 1),
+                max_value=datetime.today(),
+            )
+            gender = st.selectbox("Gender", GENDERS)
+            father_name = st.text_input("Pita ka Naam")
+            mother_name = st.text_input("Mata ka Naam")
+            phone = st.text_input("Mobile Number *")
+            alt_phone = st.text_input("Emergency / Alt Contact")
+            address = st.text_area("Address")
+            city = st.text_input("City (Shehar)")
+            conditions_sel = st.multiselect("Conditions", CONDITIONS)
+            severity = st.selectbox("Severity", SEVERITIES)
+            referral_source = st.selectbox("Referral Source", REFERRAL_SOURCES)
+            status = st.selectbox("Status", STATUSES)
+
+            st.markdown("---")
+            st.markdown("**Pehli Visit Details**")
+            doctor_name = st.text_input("Doctor / Therapist ka Naam")
+            service_type = st.selectbox("Service Type", SERVICE_TYPES)
+            visit_date = st.date_input(
+                "Clinic Aane ki Date", value=datetime.today()
+            )
+            followup_date = st.date_input(
+                "Agli Follow-up Date", value=datetime.today() + timedelta(days=7)
+            )
+            notes = st.text_area("Doctor/Clinic Notes (Khaas baatein)")
+            fee_amount = st.number_input(
+                "Fee Amount (₹)", min_value=0.0, step=100.0, value=0.0
+            )
+            payment_status = st.selectbox("Payment Status", PAYMENT_STATUSES)
+
+            submit_button = st.form_submit_button(
+                "💾 Child Register Karein", use_container_width=True
+            )
+
+            if submit_button:
+                if child_name and phone:
+                    now_iso = datetime.now().isoformat(timespec="seconds")
+                    with sqlite3.connect(DB_PATH) as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            """
+                            INSERT INTO children
+                            (child_name, dob, gender, father_name, mother_name, phone,
+                             alt_phone, address, city, conditions, severity,
+                             referral_source, status, created_by, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                child_name,
+                                str(dob) if dob else None,
+                                gender,
+                                father_name,
+                                mother_name,
+                                phone,
+                                alt_phone,
+                                address,
+                                city,
+                                ", ".join(conditions_sel),
+                                severity,
+                                referral_source,
+                                status,
+                                st.session_state["username"],
+                                now_iso,
+                            ),
+                        )
+                        new_child_id = cursor.lastrowid
+                        cursor.execute(
+                            """
+                            INSERT INTO visits
+                            (child_id, visit_date, followup_date, service_type,
+                             doctor_name, notes, fee_amount, payment_status,
+                             created_by, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                new_child_id,
+                                str(visit_date),
+                                str(followup_date),
+                                service_type,
+                                doctor_name,
+                                notes,
+                                fee_amount,
+                                payment_status,
+                                st.session_state["username"],
+                                now_iso,
+                            ),
+                        )
+                        conn.commit()
+                    log_action(
+                        st.session_state["username"],
+                        "CREATE",
+                        "children",
+                        new_child_id,
+                        f"child={child_name}",
                     )
-                    new_id = cursor.lastrowid
-                    conn.commit()
-                log_action(
-                    st.session_state["username"],
-                    "CREATE",
-                    "leads",
-                    new_id,
-                    f"child={child_name}",
+                    st.sidebar.success("Child register ho gaya hai!")
+                    st.rerun()
+                else:
+                    st.sidebar.error(
+                        "Kripya Bachche ka Naam aur Phone Number bharein."
+                    )
+    else:
+        if children_lookup_df.empty:
+            st.sidebar.info("Pehle ek child register karein.")
+        else:
+            child_options = {
+                f"{row['child_name']} ({row['phone']})": row["id"]
+                for _, row in children_lookup_df.iterrows()
+            }
+            with st.sidebar.form("new_visit_form", clear_on_submit=True):
+                selected_child_label = st.selectbox(
+                    "Child Chunein", list(child_options.keys())
                 )
-                st.sidebar.success("Record safalpurvak save ho gaya!")
-                st.rerun()
-            else:
-                st.sidebar.error(
-                    "Kripya Receiver ka Naam, Bachche ka Naam aur Phone Number bharein."
+                doctor_name = st.text_input("Doctor / Therapist ka Naam")
+                service_type = st.selectbox("Service Type", SERVICE_TYPES)
+                visit_date = st.date_input(
+                    "Visit Date", value=datetime.today()
                 )
+                followup_date = st.date_input(
+                    "Agli Follow-up Date",
+                    value=datetime.today() + timedelta(days=7),
+                )
+                notes = st.text_area("Session / Clinic Notes")
+                fee_amount = st.number_input(
+                    "Fee Amount (₹)", min_value=0.0, step=100.0, value=0.0
+                )
+                payment_status = st.selectbox("Payment Status", PAYMENT_STATUSES)
+                selected_child_id_preview = child_options[selected_child_label]
+                current_status = children_lookup_df.loc[
+                    children_lookup_df["id"] == selected_child_id_preview,
+                    "status",
+                ].iloc[0]
+                new_child_status = st.selectbox(
+                    "Child ka Overall Status",
+                    STATUSES,
+                    index=(
+                        STATUSES.index(current_status)
+                        if current_status in STATUSES
+                        else 0
+                    ),
+                )
+
+                submit_visit_btn = st.form_submit_button(
+                    "💾 Visit Save Karein", use_container_width=True
+                )
+
+                if submit_visit_btn:
+                    child_id = child_options[selected_child_label]
+                    now_iso = datetime.now().isoformat(timespec="seconds")
+                    with sqlite3.connect(DB_PATH) as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            """
+                            INSERT INTO visits
+                            (child_id, visit_date, followup_date, service_type,
+                             doctor_name, notes, fee_amount, payment_status,
+                             created_by, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                child_id,
+                                str(visit_date),
+                                str(followup_date),
+                                service_type,
+                                doctor_name,
+                                notes,
+                                fee_amount,
+                                payment_status,
+                                st.session_state["username"],
+                                now_iso,
+                            ),
+                        )
+                        new_visit_id = cursor.lastrowid
+                        if new_child_status != current_status:
+                            cursor.execute(
+                                "UPDATE children SET status=? WHERE id=?",
+                                (new_child_status, child_id),
+                            )
+                        conn.commit()
+                    log_action(
+                        st.session_state["username"],
+                        "CREATE",
+                        "visits",
+                        new_visit_id,
+                        f"child_id={child_id}",
+                    )
+                    if new_child_status != current_status:
+                        log_action(
+                            st.session_state["username"],
+                            "UPDATE",
+                            "children",
+                            child_id,
+                            f"status -> {new_child_status}",
+                        )
+                    st.sidebar.success("Visit safalpurvak save ho gayi!")
+                    st.rerun()
 
     # ---------- LOAD DATA ----------
-    EXPECTED_COLUMNS = [
-        "id",
-        "receiver_name",
-        "child_name",
-        "father_name",
-        "phone",
-        "condition",
-        "city",
-        "visit_date",
-        "followup_date",
-        "notes",
-        "status",
-        "created_at",
-        "fee_amount",
-        "doctor_name",
-    ]
     with sqlite3.connect(DB_PATH) as conn:
         try:
-            df = pd.read_sql("SELECT * FROM leads ORDER BY id DESC", conn)
+            children_df = pd.read_sql(
+                "SELECT * FROM children ORDER BY id DESC", conn
+            )
         except Exception:
-            df = pd.DataFrame(columns=EXPECTED_COLUMNS)
+            children_df = pd.DataFrame(columns=CHILD_COLUMNS)
+        try:
+            visits_df = pd.read_sql("SELECT * FROM visits ORDER BY id DESC", conn)
+        except Exception:
+            visits_df = pd.DataFrame(columns=VISIT_COLUMNS)
+        try:
+            df = pd.read_sql(
+                """
+                SELECT
+                    v.id AS visit_id, v.child_id, v.visit_date, v.followup_date,
+                    v.service_type, v.doctor_name, v.notes, v.fee_amount,
+                    v.payment_status, v.created_by AS visit_receiver,
+                    v.created_at AS visit_created_at,
+                    c.child_name, c.dob, c.gender, c.father_name, c.mother_name,
+                    c.phone, c.alt_phone, c.address, c.city, c.conditions,
+                    c.severity, c.referral_source, c.status,
+                    c.created_by AS receiver_name, c.created_at AS child_created_at
+                FROM visits v
+                JOIN children c ON v.child_id = c.id
+                ORDER BY v.id DESC
+                """,
+                conn,
+            )
+        except Exception:
+            df = pd.DataFrame(columns=MERGED_COLUMNS)
 
-    for col in EXPECTED_COLUMNS:
+    for col in CHILD_COLUMNS:
+        if col not in children_df.columns:
+            children_df[col] = None
+    for col in MERGED_COLUMNS:
         if col not in df.columns:
             df[col] = None
 
@@ -581,7 +888,7 @@ else:
         # -------- TAB 1: DASHBOARD --------
         with tab1:
             m1, m2, m3, m4, m5, m6 = st.columns(6)
-            total_leads = len(df)
+            total_children = len(children_df)
             today_visits = (
                 len(df[df["visit_date"] == today_str]) if not df.empty else 0
             )
@@ -589,19 +896,23 @@ else:
                 len(df[df["followup_date"] == today_str]) if not df.empty else 0
             )
             in_treatment = (
-                len(df[df["status"] == "In Treatment"]) if not df.empty else 0
+                len(children_df[children_df["status"] == "In Treatment"])
+                if not children_df.empty
+                else 0
             )
             new_leads = (
-                len(df[df["status"] == "New Lead"]) if not df.empty else 0
+                len(children_df[children_df["status"] == "New Lead"])
+                if not children_df.empty
+                else 0
             )
             total_revenue = (
-                df["fee_amount"].fillna(0).sum()
-                if not df.empty and "fee_amount" in df.columns
+                visits_df["fee_amount"].fillna(0).sum()
+                if not visits_df.empty and "fee_amount" in visits_df.columns
                 else 0
             )
 
             m1.markdown(
-                custom_metric("Total Patients", total_leads),
+                custom_metric("Total Children", total_children),
                 unsafe_allow_html=True,
             )
             m2.markdown(
@@ -644,7 +955,9 @@ else:
                             f"📱 {p_row['phone']} | 📍 {p_row['city'] or 'N/A'}"
                         )
                     with col_p2:
-                        st.markdown(f"🩺 **Condition:** {p_row['condition']}")
+                        st.markdown(
+                            f"🩺 **Conditions:** {p_row['conditions'] or '—'}"
+                        )
                         st.caption(f"📝 Note: {p_row['notes'] or 'N/A'}")
                     with col_p3:
                         if wa_btn_url:
@@ -663,23 +976,29 @@ else:
             if not df.empty:
                 chart_col1, chart_col2 = st.columns(2)
                 with chart_col1:
-                    st.markdown("#### 🩺 Condition-wise Distribution")
-                    cond_counts = df["condition"].value_counts().reset_index()
-                    cond_counts.columns = ["Condition", "Count"]
-                    fig1 = px.pie(
-                        cond_counts,
-                        names="Condition",
-                        values="Count",
-                        hole=0.45,
-                    )
-                    fig1.update_layout(
-                        margin=dict(t=10, b=10, l=10, r=10), height=320
-                    )
-                    st.plotly_chart(fig1, use_container_width=True)
+                    st.markdown("#### 🩺 Condition-wise Distribution (Children)")
+                    cond_series = explode_multivalue(children_df["conditions"])
+                    if not cond_series.empty:
+                        cond_counts = cond_series.value_counts().reset_index()
+                        cond_counts.columns = ["Condition", "Count"]
+                        fig1 = px.pie(
+                            cond_counts,
+                            names="Condition",
+                            values="Count",
+                            hole=0.45,
+                        )
+                        fig1.update_layout(
+                            margin=dict(t=10, b=10, l=10, r=10), height=320
+                        )
+                        st.plotly_chart(fig1, use_container_width=True)
+                    else:
+                        st.info("Koi condition data available nahi hai.")
 
                 with chart_col2:
-                    st.markdown("#### 📈 Status Overview")
-                    status_counts = df["status"].value_counts().reset_index()
+                    st.markdown("#### 📈 Status Overview (Children)")
+                    status_counts = (
+                        children_df["status"].value_counts().reset_index()
+                    )
                     status_counts.columns = ["Status", "Count"]
                     fig2 = px.bar(
                         status_counts,
@@ -695,8 +1014,49 @@ else:
                     )
                     st.plotly_chart(fig2, use_container_width=True)
 
+                chart_col3, chart_col4 = st.columns(2)
+                with chart_col3:
+                    st.markdown("#### 🧑‍⚕️ Service-type wise Visits")
+                    svc_counts = (
+                        visits_df["service_type"].value_counts().reset_index()
+                    )
+                    svc_counts.columns = ["Service Type", "Visits"]
+                    if not svc_counts.empty:
+                        fig_svc = px.bar(
+                            svc_counts,
+                            x="Service Type",
+                            y="Visits",
+                            text="Visits",
+                        )
+                        fig_svc.update_layout(
+                            margin=dict(t=10, b=10, l=10, r=10), height=320
+                        )
+                        st.plotly_chart(fig_svc, use_container_width=True)
+                    else:
+                        st.info("Koi visit data available nahi hai.")
+
+                with chart_col4:
+                    st.markdown("#### 💳 Payment Status wise Visits")
+                    pay_counts = (
+                        visits_df["payment_status"].value_counts().reset_index()
+                    )
+                    pay_counts.columns = ["Payment Status", "Count"]
+                    if not pay_counts.empty:
+                        fig_pay = px.pie(
+                            pay_counts,
+                            names="Payment Status",
+                            values="Count",
+                            hole=0.45,
+                        )
+                        fig_pay.update_layout(
+                            margin=dict(t=10, b=10, l=10, r=10), height=320
+                        )
+                        st.plotly_chart(fig_pay, use_container_width=True)
+                    else:
+                        st.info("Koi payment data available nahi hai.")
+
                 st.markdown("#### 📅 Visits Trend (Last 30 Days)")
-                trend_df = df.copy()
+                trend_df = visits_df.copy()
                 trend_df["visit_date"] = pd.to_datetime(
                     trend_df["visit_date"], errors="coerce"
                 )
@@ -719,7 +1079,7 @@ else:
                     st.info("Pichle 30 dinon mein koi visit data nahi hai.")
 
                 st.markdown("#### 💰 Monthly Revenue")
-                rev_df = df.copy()
+                rev_df = visits_df.copy()
                 rev_df["visit_date"] = pd.to_datetime(
                     rev_df["visit_date"], errors="coerce"
                 )
@@ -758,7 +1118,7 @@ else:
                     st.download_button(
                         "📄 Export CSV",
                         data=csv_data,
-                        file_name=f"clinic_leads_{today_str}.csv",
+                        file_name=f"clinic_visits_{today_str}.csv",
                         mime="text/csv",
                         use_container_width=True,
                     )
@@ -767,12 +1127,12 @@ else:
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
                         df.to_excel(
-                            writer, index=False, sheet_name="Patients_Data"
+                            writer, index=False, sheet_name="Visits_Data"
                         )
                     st.download_button(
                         "📊 Export Excel",
                         data=buffer.getvalue(),
-                        file_name=f"clinic_leads_{today_str}.xlsx",
+                        file_name=f"clinic_visits_{today_str}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                     )
@@ -794,7 +1154,7 @@ else:
                         )
                     ]
 
-                st.markdown("#### 📋 Patient Records")
+                st.markdown("#### 📋 Visit Records")
                 st.dataframe(
                     filtered_df, use_container_width=True, height=350
                 )
@@ -822,12 +1182,12 @@ else:
         # -------- TAB 2: PATIENT PROFILE --------
         with tab2:
             st.subheader("🧒 Patient Profile — 360° View")
-            if not df.empty:
+            if not children_df.empty:
                 profile_options = {
                     f"ID {row['id']} - {row['child_name']} ({row['phone']})": row[
                         "id"
                     ]
-                    for _, row in df.iterrows()
+                    for _, row in children_df.iterrows()
                 }
                 selected_profile_label = st.selectbox(
                     "Patient chunein:",
@@ -835,11 +1195,11 @@ else:
                     key="profile_select",
                 )
                 p_id = profile_options[selected_profile_label]
-                p = df[df["id"] == p_id].iloc[0]
+                p = children_df[children_df["id"] == p_id].iloc[0]
+                child_visits = visits_df[visits_df["child_id"] == p_id].copy()
 
-                fee_val = (
-                    p["fee_amount"] if pd.notna(p.get("fee_amount")) else 0
-                )
+                age_str = calculate_age(p["dob"])
+                total_paid = child_visits["fee_amount"].fillna(0).sum()
 
                 col_info, col_actions = st.columns([2.5, 1])
                 with col_info:
@@ -847,13 +1207,14 @@ else:
                         f"""
                         <div class="card">
                             <h3>{p['child_name']} {status_badge(p['status'])}</h3>
-                            <p><b>Pita ka Naam:</b> {p['father_name'] or '—'}</p>
-                            <p><b>Phone:</b> {p['phone']} &nbsp; | &nbsp; <b>City:</b> {p['city'] or '—'}</p>
-                            <p><b>Condition:</b> {p['condition'] or '—'}</p>
-                            <p><b>Clinic Visit Date:</b> {p['visit_date']} &nbsp; | &nbsp; <b>Follow-up Date:</b> {p['followup_date']}</p>
-                            <p><b>Fee Paid:</b> ₹{fee_val:,.0f}</p>
-                            <p><b>Call Receiver:</b> {p['receiver_name']}</p>
-                            <p><b>Notes:</b> {p['notes'] or '—'}</p>
+                            <p><b>DOB / Age:</b> {p['dob'] or '—'} {f"({age_str})" if age_str else ''} &nbsp; | &nbsp; <b>Gender:</b> {p['gender'] or '—'}</p>
+                            <p><b>Pita ka Naam:</b> {p['father_name'] or '—'} &nbsp; | &nbsp; <b>Mata ka Naam:</b> {p['mother_name'] or '—'}</p>
+                            <p><b>Phone:</b> {p['phone']} &nbsp; | &nbsp; <b>Emergency Contact:</b> {p['alt_phone'] or '—'}</p>
+                            <p><b>City:</b> {p['city'] or '—'} &nbsp; | &nbsp; <b>Address:</b> {p['address'] or '—'}</p>
+                            <p><b>Conditions:</b> {p['conditions'] or '—'} &nbsp; | &nbsp; <b>Severity:</b> {p['severity'] or '—'}</p>
+                            <p><b>Referral Source:</b> {p['referral_source'] or '—'}</p>
+                            <p><b>Total Visits:</b> {len(child_visits)} &nbsp; | &nbsp; <b>Total Fee Collected:</b> ₹{total_paid:,.0f}</p>
+                            <p><b>Registered By:</b> {p['created_by'] or '—'} on {p['created_at'] or '—'}</p>
                         </div>
                         """,
                         unsafe_allow_html=True,
@@ -894,14 +1255,14 @@ else:
                             with sqlite3.connect(DB_PATH) as conn:
                                 cursor = conn.cursor()
                                 cursor.execute(
-                                    "UPDATE leads SET status=? WHERE id=?",
+                                    "UPDATE children SET status=? WHERE id=?",
                                     (new_status, p_id),
                                 )
                                 conn.commit()
                             log_action(
                                 st.session_state["username"],
                                 "UPDATE",
-                                "leads",
+                                "children",
                                 p_id,
                                 f"status -> {new_status}",
                             )
@@ -909,21 +1270,96 @@ else:
                             st.rerun()
 
                 st.markdown("---")
+                st.markdown("#### 📜 Visit History")
+                if not child_visits.empty:
+                    st.dataframe(
+                        child_visits[
+                            [
+                                "id",
+                                "visit_date",
+                                "service_type",
+                                "doctor_name",
+                                "followup_date",
+                                "fee_amount",
+                                "payment_status",
+                                "notes",
+                            ]
+                        ].sort_values("visit_date", ascending=False),
+                        use_container_width=True,
+                        height=220,
+                    )
+                else:
+                    st.info("Is child ki abhi tak koi visit record nahi hai.")
+
+                with st.expander("➕ Nayi Visit Add Karein (isi child ke liye)"):
+                    with st.form(f"profile_add_visit_{p_id}"):
+                        pv_doctor = st.text_input("Doctor / Therapist ka Naam")
+                        pv_service = st.selectbox("Service Type", SERVICE_TYPES)
+                        pv_visit_date = st.date_input(
+                            "Visit Date", value=datetime.today()
+                        )
+                        pv_followup_date = st.date_input(
+                            "Agli Follow-up Date",
+                            value=datetime.today() + timedelta(days=7),
+                        )
+                        pv_notes = st.text_area("Session / Clinic Notes")
+                        pv_fee = st.number_input(
+                            "Fee Amount (₹)", min_value=0.0, step=100.0, value=0.0
+                        )
+                        pv_payment = st.selectbox(
+                            "Payment Status", PAYMENT_STATUSES
+                        )
+                        pv_submit = st.form_submit_button(
+                            "💾 Visit Save Karein", use_container_width=True
+                        )
+                        if pv_submit:
+                            with sqlite3.connect(DB_PATH) as conn:
+                                cursor = conn.cursor()
+                                cursor.execute(
+                                    """
+                                    INSERT INTO visits
+                                    (child_id, visit_date, followup_date, service_type,
+                                     doctor_name, notes, fee_amount, payment_status,
+                                     created_by, created_at)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        p_id,
+                                        str(pv_visit_date),
+                                        str(pv_followup_date),
+                                        pv_service,
+                                        pv_doctor,
+                                        pv_notes,
+                                        pv_fee,
+                                        pv_payment,
+                                        st.session_state["username"],
+                                        datetime.now().isoformat(
+                                            timespec="seconds"
+                                        ),
+                                    ),
+                                )
+                                new_visit_id = cursor.lastrowid
+                                conn.commit()
+                            log_action(
+                                st.session_state["username"],
+                                "CREATE",
+                                "visits",
+                                new_visit_id,
+                                f"child_id={p_id}",
+                            )
+                            st.success("Visit save ho gayi!")
+                            st.rerun()
+
+                st.markdown("---")
                 st.markdown("#### 📜 Is Receiver ke Baaki Patients")
-                same_receiver = df[
-                    (df["receiver_name"] == p["receiver_name"])
-                    & (df["id"] != p_id)
+                same_receiver = children_df[
+                    (children_df["created_by"] == p["created_by"])
+                    & (children_df["id"] != p_id)
                 ]
                 if not same_receiver.empty:
                     st.dataframe(
                         same_receiver[
-                            [
-                                "id",
-                                "child_name",
-                                "phone",
-                                "status",
-                                "followup_date",
-                            ]
+                            ["id", "child_name", "phone", "status"]
                         ],
                         use_container_width=True,
                         height=200,
@@ -939,144 +1375,299 @@ else:
 
         # -------- TAB 3: EDIT RECORD --------
         with tab3:
-            st.subheader("✏️ Existing Patient Record Update Karein")
-            if not df.empty:
-                patient_options = {
-                    f"ID {row['id']} - {row['child_name']} ({row['phone']})": row[
-                        "id"
-                    ]
-                    for _, row in df.iterrows()
-                }
-                selected_patient_label = st.selectbox(
-                    "Update karne ke liye Patient chunein:",
-                    list(patient_options.keys()),
-                )
-                selected_id = patient_options[selected_patient_label]
-                patient_data = df[df["id"] == selected_id].iloc[0]
+            st.subheader("✏️ Existing Record Update Karein")
+            edit_type = st.radio(
+                "Kya edit karna hai?",
+                ["🧒 Child Profile", "📅 Ek Visit"],
+                horizontal=True,
+                key="edit_type",
+            )
 
-                with st.form("edit_form"):
-                    e_col1, e_col2 = st.columns(2)
-                    with e_col1:
-                        e_receiver_name = st.text_input(
-                            "Call Receiver", value=patient_data["receiver_name"]
-                        )
-                        e_child_name = st.text_input(
-                            "Bachche ka Naam", value=patient_data["child_name"]
-                        )
-                        e_father_name = st.text_input(
-                            "Pita ka Naam", value=patient_data["father_name"]
-                        )
-                        e_phone = st.text_input(
-                            "Mobile Number", value=patient_data["phone"]
-                        )
-                        e_city = st.text_input(
-                            "City", value=patient_data["city"]
-                        )
-                        e_doctor_name = st.text_input(
-                            "Doctor ka Naam",
-                            value=(
-                                patient_data["doctor_name"]
-                                if pd.notna(patient_data.get("doctor_name"))
-                                else ""
-                            ),
-                        )
-
-                    with e_col2:
-                        cond_idx = (
-                            CONDITIONS.index(patient_data["condition"])
-                            if patient_data["condition"] in CONDITIONS
-                            else 0
-                        )
-                        e_condition = st.selectbox(
-                            "Condition", CONDITIONS, index=cond_idx
-                        )
-
-                        try:
-                            v_date = datetime.strptime(
-                                patient_data["visit_date"], "%Y-%m-%d"
-                            ).date()
-                        except Exception:
-                            v_date = datetime.today().date()
-                        try:
-                            f_date = datetime.strptime(
-                                patient_data["followup_date"], "%Y-%m-%d"
-                            ).date()
-                        except Exception:
-                            f_date = datetime.today().date()
-
-                        e_visit_date = st.date_input(
-                            "Clinic Visit Date", value=v_date
-                        )
-                        e_followup_date = st.date_input(
-                            "Agli Follow-up Date", value=f_date
-                        )
-
-                        status_idx = (
-                            STATUSES.index(patient_data["status"])
-                            if patient_data["status"] in STATUSES
-                            else 0
-                        )
-                        e_status = st.selectbox(
-                            "Status", STATUSES, index=status_idx
-                        )
-
-                    e_notes = st.text_area(
-                        "Doctor/Clinic Notes", value=patient_data["notes"]
+            if edit_type == "🧒 Child Profile":
+                if not children_df.empty:
+                    patient_options = {
+                        f"ID {row['id']} - {row['child_name']} ({row['phone']})": row[
+                            "id"
+                        ]
+                        for _, row in children_df.iterrows()
+                    }
+                    selected_patient_label = st.selectbox(
+                        "Update karne ke liye Child chunein:",
+                        list(patient_options.keys()),
                     )
-                    e_fee = st.number_input(
-                        "Fee Amount (₹)",
-                        min_value=0.0,
-                        step=100.0,
-                        value=(
-                            float(patient_data["fee_amount"])
-                            if pd.notna(patient_data.get("fee_amount"))
-                            else 0.0
-                        ),
-                    )
-                    update_button = st.form_submit_button(
-                        "💾 Record Update Karein"
-                    )
+                    selected_id = patient_options[selected_patient_label]
+                    patient_data = children_df[
+                        children_df["id"] == selected_id
+                    ].iloc[0]
 
-                    if update_button:
-                        with sqlite3.connect(DB_PATH) as conn:
-                            cursor = conn.cursor()
-                            cursor.execute(
-                                """
-                                UPDATE leads
-                                SET receiver_name=?, child_name=?, father_name=?, phone=?,
-                                    condition=?, city=?, visit_date=?, followup_date=?, notes=?, status=?, fee_amount=?, doctor_name=?
-                                WHERE id=?
-                                """,
-                                (
-                                    e_receiver_name,
-                                    e_child_name,
-                                    e_father_name,
-                                    e_phone,
-                                    e_condition,
-                                    e_city,
-                                    str(e_visit_date),
-                                    str(e_followup_date),
-                                    e_notes,
-                                    e_status,
-                                    e_fee,
-                                    e_doctor_name,
-                                    selected_id,
+                    with st.form("edit_child_form"):
+                        e_col1, e_col2 = st.columns(2)
+                        with e_col1:
+                            e_child_name = st.text_input(
+                                "Bachche ka Naam", value=patient_data["child_name"]
+                            )
+                            e_dob = st.date_input(
+                                "Date of Birth (optional)",
+                                value=parse_date_or_none(patient_data["dob"]),
+                                min_value=datetime(1995, 1, 1),
+                                max_value=datetime.today(),
+                            )
+                            gender_idx = (
+                                GENDERS.index(patient_data["gender"])
+                                if patient_data["gender"] in GENDERS
+                                else 0
+                            )
+                            e_gender = st.selectbox(
+                                "Gender", GENDERS, index=gender_idx
+                            )
+                            e_father_name = st.text_input(
+                                "Pita ka Naam", value=patient_data["father_name"]
+                            )
+                            e_mother_name = st.text_input(
+                                "Mata ka Naam",
+                                value=(
+                                    patient_data["mother_name"]
+                                    if pd.notna(patient_data.get("mother_name"))
+                                    else ""
                                 ),
                             )
-                            conn.commit()
-                        log_action(
-                            st.session_state["username"],
-                            "UPDATE",
-                            "leads",
-                            selected_id,
-                            f"child={e_child_name}",
+                            e_phone = st.text_input(
+                                "Mobile Number", value=patient_data["phone"]
+                            )
+                            e_alt_phone = st.text_input(
+                                "Emergency / Alt Contact",
+                                value=(
+                                    patient_data["alt_phone"]
+                                    if pd.notna(patient_data.get("alt_phone"))
+                                    else ""
+                                ),
+                            )
+
+                        with e_col2:
+                            e_address = st.text_area(
+                                "Address",
+                                value=(
+                                    patient_data["address"]
+                                    if pd.notna(patient_data.get("address"))
+                                    else ""
+                                ),
+                            )
+                            e_city = st.text_input(
+                                "City", value=patient_data["city"]
+                            )
+                            existing_conditions = [
+                                c.strip()
+                                for c in str(
+                                    patient_data["conditions"] or ""
+                                ).split(",")
+                                if c.strip() in CONDITIONS
+                            ]
+                            e_conditions = st.multiselect(
+                                "Conditions",
+                                CONDITIONS,
+                                default=existing_conditions,
+                            )
+                            severity_idx = (
+                                SEVERITIES.index(patient_data["severity"])
+                                if patient_data["severity"] in SEVERITIES
+                                else 0
+                            )
+                            e_severity = st.selectbox(
+                                "Severity", SEVERITIES, index=severity_idx
+                            )
+                            referral_idx = (
+                                REFERRAL_SOURCES.index(
+                                    patient_data["referral_source"]
+                                )
+                                if patient_data["referral_source"]
+                                in REFERRAL_SOURCES
+                                else 0
+                            )
+                            e_referral = st.selectbox(
+                                "Referral Source",
+                                REFERRAL_SOURCES,
+                                index=referral_idx,
+                            )
+                            status_idx = (
+                                STATUSES.index(patient_data["status"])
+                                if patient_data["status"] in STATUSES
+                                else 0
+                            )
+                            e_status = st.selectbox(
+                                "Status", STATUSES, index=status_idx
+                            )
+
+                        update_button = st.form_submit_button(
+                            "💾 Child Record Update Karein"
                         )
-                        st.success(
-                            f"ID {selected_id} ka record update ho gaya hai!"
-                        )
-                        st.rerun()
+
+                        if update_button:
+                            with sqlite3.connect(DB_PATH) as conn:
+                                cursor = conn.cursor()
+                                cursor.execute(
+                                    """
+                                    UPDATE children
+                                    SET child_name=?, dob=?, gender=?, father_name=?,
+                                        mother_name=?, phone=?, alt_phone=?, address=?,
+                                        city=?, conditions=?, severity=?, referral_source=?,
+                                        status=?
+                                    WHERE id=?
+                                    """,
+                                    (
+                                        e_child_name,
+                                        str(e_dob) if e_dob else None,
+                                        e_gender,
+                                        e_father_name,
+                                        e_mother_name,
+                                        e_phone,
+                                        e_alt_phone,
+                                        e_address,
+                                        e_city,
+                                        ", ".join(e_conditions),
+                                        e_severity,
+                                        e_referral,
+                                        e_status,
+                                        selected_id,
+                                    ),
+                                )
+                                conn.commit()
+                            log_action(
+                                st.session_state["username"],
+                                "UPDATE",
+                                "children",
+                                selected_id,
+                                f"child={e_child_name}",
+                            )
+                            st.success(
+                                f"ID {selected_id} ka child record update ho gaya hai!"
+                            )
+                            st.rerun()
+                else:
+                    st.info("Update karne ke liye koi record nahi hai.")
             else:
-                st.info("Update karne ke liye koi record nahi hai.")
+                if not df.empty:
+                    visit_options = {
+                        f"Visit #{row['visit_id']} - {row['child_name']} - {row['visit_date']}": row[
+                            "visit_id"
+                        ]
+                        for _, row in df.iterrows()
+                    }
+                    selected_visit_label = st.selectbox(
+                        "Update karne ke liye Visit chunein:",
+                        list(visit_options.keys()),
+                    )
+                    selected_visit_id = visit_options[selected_visit_label]
+                    visit_data = df[df["visit_id"] == selected_visit_id].iloc[0]
+
+                    with st.form("edit_visit_form"):
+                        ev_col1, ev_col2 = st.columns(2)
+                        with ev_col1:
+                            service_idx = (
+                                SERVICE_TYPES.index(visit_data["service_type"])
+                                if visit_data["service_type"] in SERVICE_TYPES
+                                else 0
+                            )
+                            ev_service = st.selectbox(
+                                "Service Type", SERVICE_TYPES, index=service_idx
+                            )
+                            ev_doctor = st.text_input(
+                                "Doctor / Therapist ka Naam",
+                                value=(
+                                    visit_data["doctor_name"]
+                                    if pd.notna(visit_data.get("doctor_name"))
+                                    else ""
+                                ),
+                            )
+                            try:
+                                v_date = datetime.strptime(
+                                    visit_data["visit_date"], "%Y-%m-%d"
+                                ).date()
+                            except Exception:
+                                v_date = datetime.today().date()
+                            try:
+                                f_date = datetime.strptime(
+                                    visit_data["followup_date"], "%Y-%m-%d"
+                                ).date()
+                            except Exception:
+                                f_date = datetime.today().date()
+                            ev_visit_date = st.date_input(
+                                "Visit Date", value=v_date
+                            )
+                            ev_followup_date = st.date_input(
+                                "Agli Follow-up Date", value=f_date
+                            )
+                        with ev_col2:
+                            ev_fee = st.number_input(
+                                "Fee Amount (₹)",
+                                min_value=0.0,
+                                step=100.0,
+                                value=(
+                                    float(visit_data["fee_amount"])
+                                    if pd.notna(visit_data.get("fee_amount"))
+                                    else 0.0
+                                ),
+                            )
+                            payment_idx = (
+                                PAYMENT_STATUSES.index(
+                                    visit_data["payment_status"]
+                                )
+                                if visit_data["payment_status"]
+                                in PAYMENT_STATUSES
+                                else 0
+                            )
+                            ev_payment = st.selectbox(
+                                "Payment Status",
+                                PAYMENT_STATUSES,
+                                index=payment_idx,
+                            )
+                            ev_notes = st.text_area(
+                                "Session / Clinic Notes",
+                                value=(
+                                    visit_data["notes"]
+                                    if pd.notna(visit_data.get("notes"))
+                                    else ""
+                                ),
+                            )
+
+                        update_visit_button = st.form_submit_button(
+                            "💾 Visit Update Karein"
+                        )
+
+                        if update_visit_button:
+                            with sqlite3.connect(DB_PATH) as conn:
+                                cursor = conn.cursor()
+                                cursor.execute(
+                                    """
+                                    UPDATE visits
+                                    SET service_type=?, doctor_name=?, visit_date=?,
+                                        followup_date=?, fee_amount=?, payment_status=?, notes=?
+                                    WHERE id=?
+                                    """,
+                                    (
+                                        ev_service,
+                                        ev_doctor,
+                                        str(ev_visit_date),
+                                        str(ev_followup_date),
+                                        ev_fee,
+                                        ev_payment,
+                                        ev_notes,
+                                        selected_visit_id,
+                                    ),
+                                )
+                                conn.commit()
+                            log_action(
+                                st.session_state["username"],
+                                "UPDATE",
+                                "visits",
+                                selected_visit_id,
+                                f"child={visit_data['child_name']}",
+                            )
+                            st.success(
+                                f"Visit #{selected_visit_id} update ho gaya hai!"
+                            )
+                            st.rerun()
+                else:
+                    st.info("Update karne ke liye koi visit record nahi hai.")
 
         # -------- TAB 4: REPORTS --------
         with tab4:
@@ -1091,7 +1682,7 @@ else:
                     v_str = str(selected_visit_date)
                     v_filtered = df[df["visit_date"] == v_str]
                     st.write(
-                        f"**Total Patients Scheduled ({v_str}):** {len(v_filtered)}"
+                        f"**Total Visits Scheduled ({v_str}):** {len(v_filtered)}"
                     )
                     if not v_filtered.empty:
                         st.dataframe(v_filtered, use_container_width=True)
@@ -1121,13 +1712,13 @@ else:
                 st.markdown("### 🏙️ City-wise Report & Analysis")
                 city_col1, city_col2 = st.columns([1, 2])
                 with city_col1:
-                    city_counts = df["city"].value_counts().reset_index()
+                    city_counts = children_df["city"].value_counts().reset_index()
                     city_counts.columns = ["City", "Kul Bachche"]
                     st.dataframe(city_counts, use_container_width=True)
                 with city_col2:
                     cities_list = [
                         str(c)
-                        for c in df["city"].dropna().unique()
+                        for c in children_df["city"].dropna().unique()
                         if str(c).strip()
                     ]
                     if cities_list:
@@ -1135,13 +1726,35 @@ else:
                             "City chunein:", ["Sabhi Cities"] + cities_list
                         )
                         city_filtered_df = (
-                            df
+                            children_df
                             if selected_city == "Sabhi Cities"
-                            else df[df["city"] == selected_city]
+                            else children_df[children_df["city"] == selected_city]
                         )
                         st.dataframe(city_filtered_df, use_container_width=True)
                     else:
                         st.info("Koi city data available nahi hai.")
+
+                st.markdown("---")
+                st.markdown("### 💰 Payment / Dues Report")
+                dues_df = df[df["payment_status"] != "Paid"][
+                    [
+                        "visit_id",
+                        "child_name",
+                        "phone",
+                        "visit_date",
+                        "service_type",
+                        "fee_amount",
+                        "payment_status",
+                    ]
+                ]
+                if not dues_df.empty:
+                    st.write(
+                        f"**Pending / Partial Dues:** ₹{dues_df['fee_amount'].fillna(0).sum():,.0f} "
+                        f"({len(dues_df)} visits)"
+                    )
+                    st.dataframe(dues_df, use_container_width=True, height=250)
+                else:
+                    st.success("Koi pending ya partial payment nahi hai. 🎉")
             else:
                 st.info("Reports dekhne ke liye koi data nahi hai.")
 
@@ -1185,7 +1798,7 @@ else:
                                     f"🗓️ **Follow-up Date:** {row['followup_date']}"
                                 )
                                 st.caption(
-                                    f"Note: {row['notes'] or 'Koi note nahi'}"
+                                    f"Service: {row['service_type'] or '—'} | Note: {row['notes'] or 'Koi note nahi'}"
                                 )
                             with c3:
                                 wa_link = whatsapp_link(
@@ -1208,44 +1821,99 @@ else:
 
         # -------- TAB 6: DELETE RECORD --------
         with tab6:
-            st.subheader("🗑️ Patient Record Hatayein")
+            st.subheader("🗑️ Record Hatayein")
             st.warning(
                 "⚠️ Dhyan den: Yahan se delete kiya gaya record permanently hat jayega."
             )
+            delete_type = st.radio(
+                "Kya delete karna hai?",
+                ["🧒 Poora Child (saari visits sahit)", "📅 Ek Visit"],
+                horizontal=True,
+                key="delete_type",
+            )
 
-            if not df.empty:
-                delete_options = {
-                    f"ID {row['id']} - {row['child_name']} ({row['phone']})": row[
-                        "id"
-                    ]
-                    for _, row in df.iterrows()
-                }
-                selected_del_label = st.selectbox(
-                    "Delete karne ke liye record chunein:",
-                    list(delete_options.keys()),
-                )
-                del_id = delete_options[selected_del_label]
+            if delete_type == "🧒 Poora Child (saari visits sahit)":
+                if not children_df.empty:
+                    delete_options = {
+                        f"ID {row['id']} - {row['child_name']} ({row['phone']})": row[
+                            "id"
+                        ]
+                        for _, row in children_df.iterrows()
+                    }
+                    selected_del_label = st.selectbox(
+                        "Delete karne ke liye child chunein:",
+                        list(delete_options.keys()),
+                    )
+                    del_id = delete_options[selected_del_label]
+                    related_visits_count = len(
+                        visits_df[visits_df["child_id"] == del_id]
+                    )
+                    st.warning(
+                        f"Is child ki {related_visits_count} visit(s) bhi saath mein delete ho jayengi."
+                    )
 
-                if st.button("🗑️ Permanently Delete Karein", type="primary"):
-                    with sqlite3.connect(DB_PATH) as conn:
-                        cursor = conn.cursor()
-                        cursor.execute(
-                            "DELETE FROM leads WHERE id=?", (del_id,)
+                    if st.button(
+                        "🗑️ Child aur Sabhi Visits Permanently Delete Karein",
+                        type="primary",
+                    ):
+                        with sqlite3.connect(DB_PATH) as conn:
+                            cursor = conn.cursor()
+                            cursor.execute(
+                                "DELETE FROM visits WHERE child_id=?", (del_id,)
+                            )
+                            cursor.execute(
+                                "DELETE FROM children WHERE id=?", (del_id,)
+                            )
+                            conn.commit()
+                        log_action(
+                            st.session_state["username"],
+                            "DELETE",
+                            "children",
+                            del_id,
+                            f"{selected_del_label} (+{related_visits_count} visits)",
                         )
-                        conn.commit()
-                    log_action(
-                        st.session_state["username"],
-                        "DELETE",
-                        "leads",
-                        del_id,
-                        selected_del_label,
-                    )
-                    st.success(
-                        f"Record ID {del_id} safalpurvak delete ho gaya hai!"
-                    )
-                    st.rerun()
+                        st.success(
+                            f"Child ID {del_id} aur uski sabhi visits delete ho gayi hain!"
+                        )
+                        st.rerun()
+                else:
+                    st.info("Delete karne ke liye koi record nahi hai.")
             else:
-                st.info("Delete karne ke liye koi record nahi hai.")
+                if not df.empty:
+                    visit_del_options = {
+                        f"Visit #{row['visit_id']} - {row['child_name']} - {row['visit_date']}": row[
+                            "visit_id"
+                        ]
+                        for _, row in df.iterrows()
+                    }
+                    selected_visit_del_label = st.selectbox(
+                        "Delete karne ke liye visit chunein:",
+                        list(visit_del_options.keys()),
+                    )
+                    del_visit_id = visit_del_options[selected_visit_del_label]
+
+                    if st.button(
+                        "🗑️ Visit Permanently Delete Karein", type="primary"
+                    ):
+                        with sqlite3.connect(DB_PATH) as conn:
+                            cursor = conn.cursor()
+                            cursor.execute(
+                                "DELETE FROM visits WHERE id=?", (del_visit_id,)
+                            )
+                            conn.commit()
+                        log_action(
+                            st.session_state["username"],
+                            "DELETE",
+                            "visits",
+                            del_visit_id,
+                            selected_visit_del_label,
+                        )
+                        st.success(
+                            f"Visit #{del_visit_id} safalpurvak delete ho gayi hai!"
+                        )
+                        st.rerun()
+                else:
+                    st.info("Delete karne ke liye koi visit record nahi hai.")
 
         # -------- TAB 7: USERS & AUDIT LOG --------
         with tab7:
@@ -1385,22 +2053,22 @@ else:
                 "🔍 Search (Naam, Phone, ya City se):"
             )
 
-            filtered_df_staff = df.copy()
+            filtered_children_staff = children_df.copy()
             if search_query_staff:
-                filtered_df_staff = df[
-                    df["child_name"].str.contains(
+                filtered_children_staff = children_df[
+                    children_df["child_name"].str.contains(
                         search_query_staff, case=False, na=False
                     )
-                    | df["phone"].str.contains(
+                    | children_df["phone"].str.contains(
                         search_query_staff, case=False, na=False
                     )
-                    | df["city"].str.contains(
+                    | children_df["city"].str.contains(
                         search_query_staff, case=False, na=False
                     )
                 ]
 
             st.dataframe(
-                filtered_df_staff, use_container_width=True, height=400
+                filtered_children_staff, use_container_width=True, height=400
             )
 
         with tab_s2:
@@ -1416,7 +2084,7 @@ else:
                                 f"**{row['child_name']}** — {row['phone']}"
                             )
                             st.caption(
-                                f"Condition: {row['condition']} | City: {row['city']} | Notes: {row['notes']}"
+                                f"Conditions: {row['conditions']} | City: {row['city']} | Notes: {row['notes']}"
                             )
                         with col_b:
                             wa_url_s = whatsapp_link(
