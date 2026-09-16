@@ -1,4 +1,7 @@
+import hashlib
+import hmac
 import io
+import secrets
 import sqlite3
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -98,16 +101,34 @@ STATUSES = ["New Lead", "In Treatment", "Completed"]
 
 
 # ==========================================================
-# PASSWORD HASHING HELPERS
+# PASSWORD HASHING HELPERS (PBKDF2-HMAC-SHA256, salted)
 # ==========================================================
-def make_hashes(password):
-    import hashlib
-
-    return hashlib.sha256(str.encode(password)).hexdigest()
+PBKDF2_ITERATIONS = 260_000
 
 
-def check_hashes(password, hashed_text):
-    return make_hashes(password) == hashed_text
+def hash_password(password, salt=None):
+    if salt is None:
+        salt = secrets.token_hex(16)
+    derived = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), PBKDF2_ITERATIONS
+    ).hex()
+    return f"{salt}${derived}"
+
+
+def verify_password(password, stored):
+    """Returns True/False. Also transparently supports legacy unsalted
+    SHA-256 hashes so existing databases keep working after upgrade."""
+    if "$" in stored:
+        salt, _ = stored.split("$", 1)
+        candidate = hash_password(password, salt)
+        return hmac.compare_digest(candidate, stored)
+    # Legacy format: plain sha256(password)
+    legacy = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return hmac.compare_digest(legacy, stored)
+
+
+def needs_rehash(stored):
+    return "$" not in stored
 
 
 # ==========================================================
@@ -201,11 +222,25 @@ def init_db():
 
         cursor.execute("SELECT COUNT(*) FROM users")
         if cursor.fetchone()[0] == 0:
-            default_pass = make_hashes("admin123")
+            default_pass = hash_password("admin123")
             cursor.execute(
                 "INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)",
                 ("admin", default_pass, "HR Admin", "HR Admin"),
             )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                username TEXT NOT NULL,
+                action TEXT NOT NULL,
+                entity TEXT NOT NULL,
+                entity_id TEXT,
+                details TEXT
+            )
+            """
+        )
 
         conn.commit()
 
@@ -228,19 +263,45 @@ for key, default in {
 # ==========================================================
 # AUTH & LINK HELPERS
 # ==========================================================
-def login_user(username, password):
-    hashed_pswd = make_hashes(password)
+def log_action(username, action, entity, entity_id=None, details=""):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT username, name, role FROM users WHERE username=? AND password=?",
-            (username, hashed_pswd),
+            "INSERT INTO audit_log (timestamp, username, action, entity, entity_id, details) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                datetime.now().isoformat(timespec="seconds"),
+                username,
+                action,
+                entity,
+                str(entity_id) if entity_id is not None else None,
+                details,
+            ),
         )
-        return cursor.fetchone()
+        conn.commit()
+
+
+def login_user(username, password):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT username, name, role, password FROM users WHERE username=?",
+            (username,),
+        )
+        row = cursor.fetchone()
+        if not row or not verify_password(password, row[3]):
+            return None
+        if needs_rehash(row[3]):
+            cursor.execute(
+                "UPDATE users SET password=? WHERE username=?",
+                (hash_password(password), row[0]),
+            )
+            conn.commit()
+        return (row[0], row[1], row[2])
 
 
 def add_user(username, password, name, role):
-    hashed_pswd = make_hashes(password)
+    hashed_pswd = hash_password(password)
     try:
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
@@ -328,26 +389,40 @@ if not st.session_state["logged_in"]:
                         st.error("Galat Username ya Password!")
 
         with auth_tab2:
+            st.caption(
+                "Yahan sirf Staff/Receiver account bante hain. HR Admin account "
+                "sirf ek existing HR Admin hi 'Manage Users' se bana sakta hai."
+            )
             with st.form("signup_form"):
                 new_name = st.text_input("Pura Naam")
                 new_username = st.text_input("Username")
                 new_password = st.text_input("Password", type="password")
-                new_role = st.selectbox(
-                    "Role Chunein", ["Staff / Receiver", "HR Admin"]
-                )
                 signup_btn = st.form_submit_button(
                     "Account Banayein", use_container_width=True
                 )
 
                 if signup_btn:
                     if new_name and new_username and new_password:
-                        success = add_user(
-                            new_username, new_password, new_name, new_role
-                        )
-                        if success:
-                            st.success("Account ban gaya hai! Ab login karein.")
+                        if len(new_password) < 8:
+                            st.warning(
+                                "Password kam se kam 8 characters ka hona chahiye."
+                            )
                         else:
-                            st.error("Username pehle se maujood hai.")
+                            success = add_user(
+                                new_username,
+                                new_password,
+                                new_name,
+                                "Staff / Receiver",
+                            )
+                            if success:
+                                log_action(
+                                    new_username, "SIGNUP", "users", new_username
+                                )
+                                st.success(
+                                    "Account ban gaya hai! Ab login karein."
+                                )
+                            else:
+                                st.error("Username pehle se maujood hai.")
                     else:
                         st.warning("Kripya sabhi jaankari bharein.")
 
@@ -422,7 +497,15 @@ else:
                             doctor_name,
                         ),
                     )
+                    new_id = cursor.lastrowid
                     conn.commit()
+                log_action(
+                    st.session_state["username"],
+                    "CREATE",
+                    "leads",
+                    new_id,
+                    f"child={child_name}",
+                )
                 st.sidebar.success("Record safalpurvak save ho gaya!")
                 st.rerun()
             else:
@@ -483,7 +566,7 @@ else:
     # ROLE-BASED VIEW
     # ==========================================================
     if st.session_state["user_role"] == "HR Admin":
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
             [
                 "📋 Dashboard",
                 "🧒 Patient Profile",
@@ -491,6 +574,7 @@ else:
                 "📊 Reports & Analytics",
                 "📅 Follow-up Tracker",
                 "🗑️ Delete Record",
+                "👥 Users & Audit Log",
             ]
         )
 
@@ -814,6 +898,13 @@ else:
                                     (new_status, p_id),
                                 )
                                 conn.commit()
+                            log_action(
+                                st.session_state["username"],
+                                "UPDATE",
+                                "leads",
+                                p_id,
+                                f"status -> {new_status}",
+                            )
                             st.success("Status update ho gaya!")
                             st.rerun()
 
@@ -973,6 +1064,13 @@ else:
                                 ),
                             )
                             conn.commit()
+                        log_action(
+                            st.session_state["username"],
+                            "UPDATE",
+                            "leads",
+                            selected_id,
+                            f"child={e_child_name}",
+                        )
                         st.success(
                             f"ID {selected_id} ka record update ho gaya hai!"
                         )
@@ -1135,12 +1233,141 @@ else:
                             "DELETE FROM leads WHERE id=?", (del_id,)
                         )
                         conn.commit()
+                    log_action(
+                        st.session_state["username"],
+                        "DELETE",
+                        "leads",
+                        del_id,
+                        selected_del_label,
+                    )
                     st.success(
                         f"Record ID {del_id} safalpurvak delete ho gaya hai!"
                     )
                     st.rerun()
             else:
                 st.info("Delete karne ke liye koi record nahi hai.")
+
+        # -------- TAB 7: USERS & AUDIT LOG --------
+        with tab7:
+            st.subheader("👥 User Management")
+            st.caption(
+                "Sirf HR Admin naye accounts bana sakta hai, jinme HR Admin "
+                "role bhi shaamil hai."
+            )
+
+            with sqlite3.connect(DB_PATH) as conn:
+                users_df = pd.read_sql(
+                    "SELECT username, name, role FROM users ORDER BY name", conn
+                )
+
+            with st.form("add_user_form", clear_on_submit=True):
+                u_col1, u_col2 = st.columns(2)
+                with u_col1:
+                    nu_name = st.text_input("Pura Naam", key="nu_name")
+                    nu_username = st.text_input("Username", key="nu_username")
+                with u_col2:
+                    nu_password = st.text_input(
+                        "Password", type="password", key="nu_password"
+                    )
+                    nu_role = st.selectbox(
+                        "Role", ["Staff / Receiver", "HR Admin"], key="nu_role"
+                    )
+                add_user_btn = st.form_submit_button(
+                    "➕ Account Banayein", use_container_width=True
+                )
+                if add_user_btn:
+                    if nu_name and nu_username and nu_password:
+                        if len(nu_password) < 8:
+                            st.warning(
+                                "Password kam se kam 8 characters ka hona chahiye."
+                            )
+                        else:
+                            success = add_user(
+                                nu_username, nu_password, nu_name, nu_role
+                            )
+                            if success:
+                                log_action(
+                                    st.session_state["username"],
+                                    "CREATE",
+                                    "users",
+                                    nu_username,
+                                    f"role={nu_role}",
+                                )
+                                st.success(
+                                    f"Account '{nu_username}' ban gaya hai."
+                                )
+                                st.rerun()
+                            else:
+                                st.error("Username pehle se maujood hai.")
+                    else:
+                        st.warning("Kripya sabhi jaankari bharein.")
+
+            st.markdown("#### Existing Users")
+            st.dataframe(users_df, use_container_width=True, height=220)
+
+            admin_count = int((users_df["role"] == "HR Admin").sum())
+            del_col1, del_col2 = st.columns([3, 1])
+            with del_col1:
+                deletable_users = [
+                    u for u in users_df["username"].tolist()
+                ]
+                user_to_remove = st.selectbox(
+                    "Account hataayein:", deletable_users, key="user_to_remove"
+                )
+            with del_col2:
+                st.markdown("###")
+                if st.button("🗑️ Remove User", use_container_width=True):
+                    if user_to_remove == st.session_state["username"]:
+                        st.error("Aap apna hi account nahi hata sakte.")
+                    else:
+                        removed_role = users_df.loc[
+                            users_df["username"] == user_to_remove, "role"
+                        ].iloc[0]
+                        if removed_role == "HR Admin" and admin_count <= 1:
+                            st.error(
+                                "Aakhri HR Admin account hataya nahi ja sakta."
+                            )
+                        else:
+                            with sqlite3.connect(DB_PATH) as conn:
+                                cursor = conn.cursor()
+                                cursor.execute(
+                                    "DELETE FROM users WHERE username=?",
+                                    (user_to_remove,),
+                                )
+                                conn.commit()
+                            log_action(
+                                st.session_state["username"],
+                                "DELETE",
+                                "users",
+                                user_to_remove,
+                            )
+                            st.success(f"'{user_to_remove}' hata diya gaya.")
+                            st.rerun()
+
+            st.markdown("---")
+            st.subheader("📜 Audit Log")
+            with sqlite3.connect(DB_PATH) as conn:
+                try:
+                    audit_df = pd.read_sql(
+                        "SELECT timestamp, username, action, entity, entity_id, details "
+                        "FROM audit_log ORDER BY id DESC LIMIT 300",
+                        conn,
+                    )
+                except Exception:
+                    audit_df = pd.DataFrame(
+                        columns=[
+                            "timestamp",
+                            "username",
+                            "action",
+                            "entity",
+                            "entity_id",
+                            "details",
+                        ]
+                    )
+            if not audit_df.empty:
+                st.dataframe(audit_df, use_container_width=True, height=350)
+            else:
+                st.info("Abhi tak koi audit activity record nahi hui hai.")
 
     # ==========================================================
     # STAFF / RECEIVER VIEW
