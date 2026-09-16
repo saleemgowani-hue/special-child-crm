@@ -102,6 +102,12 @@ CONDITIONS = [
 SEVERITIES = ["Not Specified", "Mild", "Moderate", "Severe"]
 GENDERS = ["Male", "Female", "Other"]
 STATUSES = ["New Lead", "In Treatment", "Completed", "Inactive"]
+SELF_SIGNUP_ROLES = ["Receptionist", "Doctor", "Therapist"]
+ADMIN_CREATABLE_ROLES = ["Receptionist", "Doctor", "Therapist", "HR Admin"]
+CLINICAL_ROLES = {"Doctor", "Therapist"}
+# "Staff / Receiver" is the legacy role name from before granular roles existed;
+# accounts created with it behave exactly like "Receptionist".
+FRONT_DESK_ROLES = {"Receptionist", "Staff / Receiver"}
 SERVICE_TYPES = [
     "Consultation",
     "Speech Therapy",
@@ -873,6 +879,346 @@ def render_documents_section(child_id):
                 st.rerun()
 
 
+def render_patient_profile_tab(children_df, visits_df, show_billing=True):
+    st.subheader("🧒 Patient Profile — 360° View")
+    if children_df.empty:
+        st.info("Abhi tak koi record nahi hai. Sidebar se entry add karein.")
+        return
+
+    profile_options = {
+        f"ID {row['id']} - {row['child_name']} ({row['phone']})": row["id"]
+        for _, row in children_df.iterrows()
+    }
+    selected_profile_label = st.selectbox(
+        "Patient chunein:",
+        list(profile_options.keys()),
+        key="profile_select",
+    )
+    p_id = profile_options[selected_profile_label]
+    p = children_df[children_df["id"] == p_id].iloc[0]
+    child_visits = visits_df[visits_df["child_id"] == p_id].copy()
+
+    age_str = calculate_age(p["dob"])
+    total_paid = child_visits["fee_amount"].fillna(0).sum()
+    billing_line = (
+        f"<p><b>Total Visits:</b> {len(child_visits)} &nbsp; | &nbsp; "
+        f"<b>Total Fee Collected:</b> ₹{total_paid:,.0f}</p>"
+        if show_billing
+        else f"<p><b>Total Visits:</b> {len(child_visits)}</p>"
+    )
+
+    col_info, col_actions = st.columns([2.5, 1])
+    with col_info:
+        st.markdown(
+            f"""
+            <div class="card">
+                <h3>{p['child_name']} {status_badge(p['status'])}</h3>
+                <p><b>DOB / Age:</b> {p['dob'] or '—'} {f"({age_str})" if age_str else ''} &nbsp; | &nbsp; <b>Gender:</b> {p['gender'] or '—'}</p>
+                <p><b>Pita ka Naam:</b> {p['father_name'] or '—'} &nbsp; | &nbsp; <b>Mata ka Naam:</b> {p['mother_name'] or '—'}</p>
+                <p><b>Phone:</b> {p['phone']} &nbsp; | &nbsp; <b>Emergency Contact:</b> {p['alt_phone'] or '—'}</p>
+                <p><b>City:</b> {p['city'] or '—'} &nbsp; | &nbsp; <b>Address:</b> {p['address'] or '—'}</p>
+                <p><b>Conditions:</b> {p['conditions'] or '—'} &nbsp; | &nbsp; <b>Severity:</b> {p['severity'] or '—'}</p>
+                <p><b>Referral Source:</b> {p['referral_source'] or '—'}</p>
+                {billing_line}
+                <p><b>Registered By:</b> {p['created_by'] or '—'} on {p['created_at'] or '—'}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with col_actions:
+        st.markdown("#### Quick Actions")
+        wa_url = whatsapp_link(
+            p["phone"],
+            message=f"Namaste, {p['child_name']} ke clinic visit/follow-up ke baare mein baat karni thi.",
+        )
+        tel_url = call_link(p["phone"])
+        if wa_url:
+            st.link_button(
+                "💬 WhatsApp Karein", wa_url, use_container_width=True
+            )
+        if tel_url:
+            st.link_button(
+                "📞 Call Karein", tel_url, use_container_width=True
+            )
+
+        with st.form(f"quick_status_{p_id}"):
+            new_status = st.selectbox(
+                "Status Update Karein",
+                STATUSES,
+                index=(
+                    STATUSES.index(p["status"]) if p["status"] in STATUSES else 0
+                ),
+            )
+            quick_update = st.form_submit_button(
+                "💾 Update", use_container_width=True
+            )
+            if quick_update:
+                with sqlite3.connect(DB_PATH) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "UPDATE children SET status=? WHERE id=?",
+                        (new_status, p_id),
+                    )
+                    conn.commit()
+                log_action(
+                    st.session_state["username"],
+                    "UPDATE",
+                    "children",
+                    p_id,
+                    f"status -> {new_status}",
+                )
+                st.success("Status update ho gaya!")
+                st.rerun()
+
+    st.markdown("---")
+    st.markdown("#### 📜 Visit History")
+    visit_cols = [
+        "id",
+        "visit_date",
+        "service_type",
+        "doctor_name",
+        "followup_date",
+    ]
+    if show_billing:
+        visit_cols += ["fee_amount", "payment_status"]
+    visit_cols.append("notes")
+    if not child_visits.empty:
+        st.dataframe(
+            child_visits[visit_cols].sort_values("visit_date", ascending=False),
+            use_container_width=True,
+            height=220,
+        )
+    else:
+        st.info("Is child ki abhi tak koi visit record nahi hai.")
+
+    with st.expander("➕ Nayi Visit Add Karein (isi child ke liye)"):
+        with st.form(f"profile_add_visit_{p_id}"):
+            pv_doctor = st.text_input("Doctor / Therapist ka Naam")
+            pv_service = st.selectbox("Service Type", SERVICE_TYPES)
+            pv_visit_date = st.date_input("Visit Date", value=datetime.today())
+            pv_followup_date = st.date_input(
+                "Agli Follow-up Date", value=datetime.today() + timedelta(days=7)
+            )
+            pv_notes = st.text_area("Session / Clinic Notes")
+            if show_billing:
+                pv_fee = st.number_input(
+                    "Fee Amount (₹)", min_value=0.0, step=100.0, value=0.0
+                )
+                pv_payment = st.selectbox("Payment Status", PAYMENT_STATUSES)
+            else:
+                pv_fee = 0.0
+                pv_payment = "Pending"
+            pv_submit = st.form_submit_button(
+                "💾 Visit Save Karein", use_container_width=True
+            )
+            if pv_submit:
+                with sqlite3.connect(DB_PATH) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        """
+                        INSERT INTO visits
+                        (child_id, visit_date, followup_date, service_type,
+                         doctor_name, notes, fee_amount, payment_status,
+                         created_by, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            p_id,
+                            str(pv_visit_date),
+                            str(pv_followup_date),
+                            pv_service,
+                            pv_doctor,
+                            pv_notes,
+                            pv_fee,
+                            pv_payment,
+                            st.session_state["username"],
+                            datetime.now().isoformat(timespec="seconds"),
+                        ),
+                    )
+                    new_visit_id = cursor.lastrowid
+                    conn.commit()
+                log_action(
+                    st.session_state["username"],
+                    "CREATE",
+                    "visits",
+                    new_visit_id,
+                    f"child_id={p_id}",
+                )
+                st.success("Visit save ho gayi!")
+                st.rerun()
+
+    st.markdown("---")
+    render_documents_section(p_id)
+
+    st.markdown("---")
+    st.markdown("#### 📜 Is Receiver ke Baaki Patients")
+    same_receiver = children_df[
+        (children_df["created_by"] == p["created_by"]) & (children_df["id"] != p_id)
+    ]
+    if not same_receiver.empty:
+        st.dataframe(
+            same_receiver[["id", "child_name", "phone", "status"]],
+            use_container_width=True,
+            height=200,
+        )
+    else:
+        st.info("Is receiver ke paas koi aur patient record nahi hai.")
+
+
+def render_followup_tracker_tab(df, key_prefix="tracker"):
+    st.subheader("📅 Active Follow-up Tracker")
+    if df.empty:
+        st.info("Follow-up track karne ke liye koi data nahi hai.")
+        return
+
+    f_status = st.radio(
+        "Filter Follow-ups:",
+        ["Overdue", "Aaj Ke", "Agami (Upcoming)"],
+        horizontal=True,
+        key=f"{key_prefix}_followup_filter",
+    )
+
+    df = df.copy()
+    df["followup_date_dt"] = pd.to_datetime(
+        df["followup_date"], errors="coerce"
+    ).dt.date
+    today_dt = datetime.today().date()
+
+    if f_status == "Overdue":
+        tracker_df = df[df["followup_date_dt"] < today_dt]
+    elif f_status == "Aaj Ke":
+        tracker_df = df[df["followup_date_dt"] == today_dt]
+    else:
+        tracker_df = df[df["followup_date_dt"] > today_dt]
+
+    st.write(f"**Kul Records Found:** {len(tracker_df)}")
+
+    if not tracker_df.empty:
+        for _, row in tracker_df.iterrows():
+            with st.container():
+                c1, c2, c3 = st.columns([3, 2, 1])
+                with c1:
+                    st.markdown(
+                        f"**{row['child_name']}** (Pita: {row['father_name'] or 'N/A'})"
+                    )
+                    st.caption(
+                        f"Phone: {row['phone']} | City: {row['city'] or 'N/A'} | Status: {row['status']}"
+                    )
+                with c2:
+                    st.markdown(
+                        f"🗓️ **Follow-up Date:** {row['followup_date']}"
+                    )
+                    st.caption(
+                        f"Service: {row['service_type'] or '—'} | Note: {row['notes'] or 'Koi note nahi'}"
+                    )
+                with c3:
+                    wa_link = whatsapp_link(
+                        row["phone"],
+                        f"Namaste, {row['child_name']} ke follow-up ke baare mein reminder call/msg hai.",
+                    )
+                    if wa_link:
+                        st.link_button(
+                            "💬 WhatsApp", wa_link, use_container_width=True
+                        )
+                st.divider()
+    else:
+        st.success("Is category mein koi follow-up records nahi hain.")
+
+
+def render_clinical_dashboard(df, children_df, today_str):
+    m1, m2, m3, m4 = st.columns(4)
+    total_children = len(children_df)
+    today_visits = len(df[df["visit_date"] == today_str]) if not df.empty else 0
+    today_followups = (
+        len(df[df["followup_date"] == today_str]) if not df.empty else 0
+    )
+    in_treatment = (
+        len(children_df[children_df["status"] == "In Treatment"])
+        if not children_df.empty
+        else 0
+    )
+
+    m1.markdown(
+        custom_metric("Mere Patients", total_children), unsafe_allow_html=True
+    )
+    m2.markdown(
+        custom_metric("Aaj ke Visits", today_visits), unsafe_allow_html=True
+    )
+    m3.markdown(
+        custom_metric("Aaj ke Follow-ups", today_followups),
+        unsafe_allow_html=True,
+    )
+    m4.markdown(
+        custom_metric("In Treatment", in_treatment), unsafe_allow_html=True
+    )
+
+    st.markdown("###")
+    st.markdown("### 💬 Aaj ke Sabhi Due Follow-ups")
+    due_today_list = df[df["followup_date"] == today_str]
+    if not due_today_list.empty:
+        for idx, p_row in due_today_list.iterrows():
+            msg = (
+                f"Namaste {p_row['father_name'] or ''} ji, Normal Child Clinic se "
+                f"follow-up call/msg hai. Bachche {p_row['child_name']} ki health "
+                f"aur clinic visit ke baare mein updates lene the. Kripya batayein "
+                f"abhi kaisi tabiyat hai?"
+            )
+            wa_btn_url = whatsapp_link(p_row["phone"], msg)
+            col_p1, col_p2, col_p3 = st.columns([2.5, 2, 1])
+            with col_p1:
+                st.markdown(
+                    f"**🧒 {p_row['child_name']}** (Pita: {p_row['father_name'] or '—'})"
+                )
+                st.caption(f"📱 {p_row['phone']} | 📍 {p_row['city'] or 'N/A'}")
+            with col_p2:
+                st.markdown(f"🩺 **Conditions:** {p_row['conditions'] or '—'}")
+                st.caption(f"📝 Note: {p_row['notes'] or 'N/A'}")
+            with col_p3:
+                if wa_btn_url:
+                    st.link_button(
+                        "💬 Send WhatsApp",
+                        wa_btn_url,
+                        use_container_width=True,
+                        type="primary",
+                    )
+            st.divider()
+    else:
+        st.success("🎉 Aaj ke liye koi pending follow-up nahi hai!")
+
+    st.markdown("---")
+    if not children_df.empty:
+        chart_col1, chart_col2 = st.columns(2)
+        with chart_col1:
+            st.markdown("#### 🩺 Condition-wise Distribution")
+            cond_series = explode_multivalue(children_df["conditions"])
+            if not cond_series.empty:
+                cond_counts = cond_series.value_counts().reset_index()
+                cond_counts.columns = ["Condition", "Count"]
+                fig1 = px.pie(
+                    cond_counts, names="Condition", values="Count", hole=0.45
+                )
+                fig1.update_layout(
+                    margin=dict(t=10, b=10, l=10, r=10), height=320
+                )
+                st.plotly_chart(fig1, use_container_width=True)
+            else:
+                st.info("Koi condition data available nahi hai.")
+        with chart_col2:
+            st.markdown("#### 📈 Status Overview")
+            status_counts = children_df["status"].value_counts().reset_index()
+            status_counts.columns = ["Status", "Count"]
+            fig2 = px.bar(
+                status_counts, x="Status", y="Count", color="Status", text="Count"
+            )
+            fig2.update_layout(
+                margin=dict(t=10, b=10, l=10, r=10),
+                height=320,
+                showlegend=False,
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+
+
 # ==========================================================
 # 🔐 AUTH SCREEN
 # ==========================================================
@@ -912,8 +1258,9 @@ if not st.session_state["logged_in"]:
 
         with auth_tab2:
             st.caption(
-                "Yahan sirf Staff/Receiver account bante hain. HR Admin account "
-                "sirf ek existing HR Admin hi 'Manage Users' se bana sakta hai."
+                "Yahan Receptionist, Doctor ya Therapist account bante hain. "
+                "HR Admin account sirf ek existing HR Admin hi 'Manage Users' "
+                "se bana sakta hai."
             )
             with sqlite3.connect(DB_PATH) as conn:
                 signup_branches_df = pd.read_sql(
@@ -923,6 +1270,7 @@ if not st.session_state["logged_in"]:
                 new_name = st.text_input("Pura Naam")
                 new_username = st.text_input("Username")
                 new_password = st.text_input("Password", type="password")
+                new_role = st.selectbox("Role", SELF_SIGNUP_ROLES)
                 signup_branch_name = st.selectbox(
                     "Branch", signup_branches_df["name"].tolist()
                 )
@@ -948,7 +1296,7 @@ if not st.session_state["logged_in"]:
                                 new_username,
                                 new_password,
                                 new_name,
-                                "Staff / Receiver",
+                                new_role,
                                 signup_branch_id,
                             )
                             if success:
@@ -1075,10 +1423,14 @@ else:
                 "Agli Follow-up Date", value=datetime.today() + timedelta(days=7)
             )
             notes = st.text_area("Doctor/Clinic Notes (Khaas baatein)")
-            fee_amount = st.number_input(
-                "Fee Amount (₹)", min_value=0.0, step=100.0, value=0.0
-            )
-            payment_status = st.selectbox("Payment Status", PAYMENT_STATUSES)
+            if st.session_state["user_role"] not in CLINICAL_ROLES:
+                fee_amount = st.number_input(
+                    "Fee Amount (₹)", min_value=0.0, step=100.0, value=0.0
+                )
+                payment_status = st.selectbox("Payment Status", PAYMENT_STATUSES)
+            else:
+                fee_amount = 0.0
+                payment_status = "Pending"
 
             submit_button = st.form_submit_button(
                 "💾 Child Register Karein", use_container_width=True
@@ -1174,10 +1526,16 @@ else:
                     value=datetime.today() + timedelta(days=7),
                 )
                 notes = st.text_area("Session / Clinic Notes")
-                fee_amount = st.number_input(
-                    "Fee Amount (₹)", min_value=0.0, step=100.0, value=0.0
-                )
-                payment_status = st.selectbox("Payment Status", PAYMENT_STATUSES)
+                if st.session_state["user_role"] not in CLINICAL_ROLES:
+                    fee_amount = st.number_input(
+                        "Fee Amount (₹)", min_value=0.0, step=100.0, value=0.0
+                    )
+                    payment_status = st.selectbox(
+                        "Payment Status", PAYMENT_STATUSES
+                    )
+                else:
+                    fee_amount = 0.0
+                    payment_status = "Pending"
                 selected_child_id_preview = child_options[selected_child_label]
                 current_status = children_lookup_df.loc[
                     children_lookup_df["id"] == selected_child_id_preview,
@@ -1644,200 +2002,7 @@ else:
 
         # -------- TAB 2: PATIENT PROFILE --------
         with tab2:
-            st.subheader("🧒 Patient Profile — 360° View")
-            if not children_df.empty:
-                profile_options = {
-                    f"ID {row['id']} - {row['child_name']} ({row['phone']})": row[
-                        "id"
-                    ]
-                    for _, row in children_df.iterrows()
-                }
-                selected_profile_label = st.selectbox(
-                    "Patient chunein:",
-                    list(profile_options.keys()),
-                    key="profile_select",
-                )
-                p_id = profile_options[selected_profile_label]
-                p = children_df[children_df["id"] == p_id].iloc[0]
-                child_visits = visits_df[visits_df["child_id"] == p_id].copy()
-
-                age_str = calculate_age(p["dob"])
-                total_paid = child_visits["fee_amount"].fillna(0).sum()
-
-                col_info, col_actions = st.columns([2.5, 1])
-                with col_info:
-                    st.markdown(
-                        f"""
-                        <div class="card">
-                            <h3>{p['child_name']} {status_badge(p['status'])}</h3>
-                            <p><b>DOB / Age:</b> {p['dob'] or '—'} {f"({age_str})" if age_str else ''} &nbsp; | &nbsp; <b>Gender:</b> {p['gender'] or '—'}</p>
-                            <p><b>Pita ka Naam:</b> {p['father_name'] or '—'} &nbsp; | &nbsp; <b>Mata ka Naam:</b> {p['mother_name'] or '—'}</p>
-                            <p><b>Phone:</b> {p['phone']} &nbsp; | &nbsp; <b>Emergency Contact:</b> {p['alt_phone'] or '—'}</p>
-                            <p><b>City:</b> {p['city'] or '—'} &nbsp; | &nbsp; <b>Address:</b> {p['address'] or '—'}</p>
-                            <p><b>Conditions:</b> {p['conditions'] or '—'} &nbsp; | &nbsp; <b>Severity:</b> {p['severity'] or '—'}</p>
-                            <p><b>Referral Source:</b> {p['referral_source'] or '—'}</p>
-                            <p><b>Total Visits:</b> {len(child_visits)} &nbsp; | &nbsp; <b>Total Fee Collected:</b> ₹{total_paid:,.0f}</p>
-                            <p><b>Registered By:</b> {p['created_by'] or '—'} on {p['created_at'] or '—'}</p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                with col_actions:
-                    st.markdown("#### Quick Actions")
-                    wa_url = whatsapp_link(
-                        p["phone"],
-                        message=f"Namaste, {p['child_name']} ke clinic visit/follow-up ke baare mein baat karni thi.",
-                    )
-                    tel_url = call_link(p["phone"])
-                    if wa_url:
-                        st.link_button(
-                            "💬 WhatsApp Karein",
-                            wa_url,
-                            use_container_width=True,
-                        )
-                    if tel_url:
-                        st.link_button(
-                            "📞 Call Karein", tel_url, use_container_width=True
-                        )
-
-                    with st.form(f"quick_status_{p_id}"):
-                        new_status = st.selectbox(
-                            "Status Update Karein",
-                            STATUSES,
-                            index=(
-                                STATUSES.index(p["status"])
-                                if p["status"] in STATUSES
-                                else 0
-                            ),
-                        )
-                        quick_update = st.form_submit_button(
-                            "💾 Update", use_container_width=True
-                        )
-                        if quick_update:
-                            with sqlite3.connect(DB_PATH) as conn:
-                                cursor = conn.cursor()
-                                cursor.execute(
-                                    "UPDATE children SET status=? WHERE id=?",
-                                    (new_status, p_id),
-                                )
-                                conn.commit()
-                            log_action(
-                                st.session_state["username"],
-                                "UPDATE",
-                                "children",
-                                p_id,
-                                f"status -> {new_status}",
-                            )
-                            st.success("Status update ho gaya!")
-                            st.rerun()
-
-                st.markdown("---")
-                st.markdown("#### 📜 Visit History")
-                if not child_visits.empty:
-                    st.dataframe(
-                        child_visits[
-                            [
-                                "id",
-                                "visit_date",
-                                "service_type",
-                                "doctor_name",
-                                "followup_date",
-                                "fee_amount",
-                                "payment_status",
-                                "notes",
-                            ]
-                        ].sort_values("visit_date", ascending=False),
-                        use_container_width=True,
-                        height=220,
-                    )
-                else:
-                    st.info("Is child ki abhi tak koi visit record nahi hai.")
-
-                with st.expander("➕ Nayi Visit Add Karein (isi child ke liye)"):
-                    with st.form(f"profile_add_visit_{p_id}"):
-                        pv_doctor = st.text_input("Doctor / Therapist ka Naam")
-                        pv_service = st.selectbox("Service Type", SERVICE_TYPES)
-                        pv_visit_date = st.date_input(
-                            "Visit Date", value=datetime.today()
-                        )
-                        pv_followup_date = st.date_input(
-                            "Agli Follow-up Date",
-                            value=datetime.today() + timedelta(days=7),
-                        )
-                        pv_notes = st.text_area("Session / Clinic Notes")
-                        pv_fee = st.number_input(
-                            "Fee Amount (₹)", min_value=0.0, step=100.0, value=0.0
-                        )
-                        pv_payment = st.selectbox(
-                            "Payment Status", PAYMENT_STATUSES
-                        )
-                        pv_submit = st.form_submit_button(
-                            "💾 Visit Save Karein", use_container_width=True
-                        )
-                        if pv_submit:
-                            with sqlite3.connect(DB_PATH) as conn:
-                                cursor = conn.cursor()
-                                cursor.execute(
-                                    """
-                                    INSERT INTO visits
-                                    (child_id, visit_date, followup_date, service_type,
-                                     doctor_name, notes, fee_amount, payment_status,
-                                     created_by, created_at)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """,
-                                    (
-                                        p_id,
-                                        str(pv_visit_date),
-                                        str(pv_followup_date),
-                                        pv_service,
-                                        pv_doctor,
-                                        pv_notes,
-                                        pv_fee,
-                                        pv_payment,
-                                        st.session_state["username"],
-                                        datetime.now().isoformat(
-                                            timespec="seconds"
-                                        ),
-                                    ),
-                                )
-                                new_visit_id = cursor.lastrowid
-                                conn.commit()
-                            log_action(
-                                st.session_state["username"],
-                                "CREATE",
-                                "visits",
-                                new_visit_id,
-                                f"child_id={p_id}",
-                            )
-                            st.success("Visit save ho gayi!")
-                            st.rerun()
-
-                st.markdown("---")
-                render_documents_section(p_id)
-
-                st.markdown("---")
-                st.markdown("#### 📜 Is Receiver ke Baaki Patients")
-                same_receiver = children_df[
-                    (children_df["created_by"] == p["created_by"])
-                    & (children_df["id"] != p_id)
-                ]
-                if not same_receiver.empty:
-                    st.dataframe(
-                        same_receiver[
-                            ["id", "child_name", "phone", "status"]
-                        ],
-                        use_container_width=True,
-                        height=200,
-                    )
-                else:
-                    st.info(
-                        "Is receiver ke paas koi aur patient record nahi hai."
-                    )
-            else:
-                st.info(
-                    "Abhi tak koi record nahi hai. Sidebar se entry add karein."
-                )
+            render_patient_profile_tab(children_df, visits_df, show_billing=True)
 
         # -------- TAB 3: EDIT RECORD --------
         with tab3:
@@ -2226,64 +2391,7 @@ else:
 
         # -------- TAB 5: FOLLOW-UP TRACKER --------
         with tab5:
-            st.subheader("📅 Active Follow-up Tracker")
-            if not df.empty:
-                f_status = st.radio(
-                    "Filter Follow-ups:",
-                    ["Overdue", "Aaj Ke", "Agami (Upcoming)"],
-                    horizontal=True,
-                )
-
-                df["followup_date_dt"] = pd.to_datetime(
-                    df["followup_date"], errors="coerce"
-                ).dt.date
-                today_dt = datetime.today().date()
-
-                if f_status == "Overdue":
-                    tracker_df = df[df["followup_date_dt"] < today_dt]
-                elif f_status == "Aaj Ke":
-                    tracker_df = df[df["followup_date_dt"] == today_dt]
-                else:
-                    tracker_df = df[df["followup_date_dt"] > today_dt]
-
-                st.write(f"**Kul Records Found:** {len(tracker_df)}")
-
-                if not tracker_df.empty:
-                    for _, row in tracker_df.iterrows():
-                        with st.container():
-                            c1, c2, c3 = st.columns([3, 2, 1])
-                            with c1:
-                                st.markdown(
-                                    f"**{row['child_name']}** (Pita: {row['father_name'] or 'N/A'})"
-                                )
-                                st.caption(
-                                    f"Phone: {row['phone']} | City: {row['city'] or 'N/A'} | Status: {row['status']}"
-                                )
-                            with c2:
-                                st.markdown(
-                                    f"🗓️ **Follow-up Date:** {row['followup_date']}"
-                                )
-                                st.caption(
-                                    f"Service: {row['service_type'] or '—'} | Note: {row['notes'] or 'Koi note nahi'}"
-                                )
-                            with c3:
-                                wa_link = whatsapp_link(
-                                    row["phone"],
-                                    f"Namaste, {row['child_name']} ke follow-up ke baare mein reminder call/msg hai.",
-                                )
-                                if wa_link:
-                                    st.link_button(
-                                        "💬 WhatsApp",
-                                        wa_link,
-                                        use_container_width=True,
-                                    )
-                            st.divider()
-                else:
-                    st.success(
-                        "Is category mein koi follow-up records nahi hain."
-                    )
-            else:
-                st.info("Follow-up track karne ke liye koi data nahi hai.")
+            render_followup_tracker_tab(df, key_prefix="admin")
 
         # -------- TAB 6: DELETE RECORD --------
         with tab6:
@@ -2409,7 +2517,7 @@ else:
                         "Password", type="password", key="nu_password"
                     )
                     nu_role = st.selectbox(
-                        "Role", ["Staff / Receiver", "HR Admin"], key="nu_role"
+                        "Role", ADMIN_CREATABLE_ROLES, key="nu_role"
                     )
                 add_user_btn = st.form_submit_button(
                     "➕ Account Banayein", use_container_width=True
@@ -2662,7 +2770,28 @@ else:
                 )
 
     # ==========================================================
-    # STAFF / RECEIVER VIEW
+    # CLINICAL VIEW (Doctor / Therapist)
+    # ==========================================================
+    elif st.session_state["user_role"] in CLINICAL_ROLES:
+        tab_c1, tab_c2, tab_c3, tab_c4 = st.tabs(
+            [
+                "📋 Dashboard",
+                "🧒 Patient Profile",
+                "🎯 Therapy Goals",
+                "📅 Follow-up Tracker",
+            ]
+        )
+        with tab_c1:
+            render_clinical_dashboard(df, children_df, today_str)
+        with tab_c2:
+            render_patient_profile_tab(children_df, visits_df, show_billing=False)
+        with tab_c3:
+            render_goals_tab(children_df)
+        with tab_c4:
+            render_followup_tracker_tab(df, key_prefix="clinical")
+
+    # ==========================================================
+    # FRONT DESK VIEW (Receptionist / legacy Staff)
     # ==========================================================
     else:
         st.subheader("📋 Patient Entries & Quick Follow-up Tracker")
