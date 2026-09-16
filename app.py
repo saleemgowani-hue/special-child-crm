@@ -1794,18 +1794,18 @@ else:
     # ROLE-BASED VIEW
     # ==========================================================
     if st.session_state["user_role"] == "HR Admin":
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(
+        tab1, tab2, tab3, tab10, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
             [
                 "📋 Dashboard",
                 "🧒 Patient Profile",
                 "✏️ Edit Record",
+                "🗓️ Appointment Calendar",
                 "📊 Reports & Analytics",
                 "📅 Follow-up Tracker",
                 "🗑️ Delete Record",
                 "👥 Users & Audit Log",
                 "🎯 Therapy Goals",
                 "🏢 Branches",
-                "🗓️ Appointment Calendar",
             ]
         )
 
