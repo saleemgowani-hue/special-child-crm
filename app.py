@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import io
+import os
 import secrets
 import sqlite3
 from datetime import datetime, timedelta
@@ -121,6 +122,26 @@ REFERRAL_SOURCES = [
     "Friend / Family Referral",
     "Other",
 ]
+GOAL_CATEGORIES = [
+    "Speech & Language",
+    "Motor Skills",
+    "Cognitive",
+    "Behavioral",
+    "Social Skills",
+    "Academic",
+    "Self-Care / Daily Living",
+    "Other",
+]
+GOAL_STATUSES = ["Not Started", "In Progress", "Achieved", "On Hold"]
+DOCUMENT_CATEGORIES = [
+    "Diagnosis Report",
+    "Assessment",
+    "Prescription",
+    "IEP / School Report",
+    "Other",
+]
+UPLOADS_DIR = "uploads"
+os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 CHILD_COLUMNS = [
     "id",
@@ -351,6 +372,48 @@ def init_db():
             """
         )
 
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                child_id INTEGER NOT NULL REFERENCES children(id),
+                goal_title TEXT NOT NULL,
+                category TEXT,
+                description TEXT,
+                target_date TEXT,
+                status TEXT,
+                created_by TEXT,
+                created_at TEXT
+            )
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goal_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                goal_id INTEGER NOT NULL REFERENCES goals(id),
+                note TEXT NOT NULL,
+                created_by TEXT,
+                created_at TEXT
+            )
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                child_id INTEGER NOT NULL REFERENCES children(id),
+                file_name TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                category TEXT,
+                uploaded_by TEXT,
+                uploaded_at TEXT
+            )
+            """
+        )
+
         conn.commit()
 
 
@@ -496,6 +559,270 @@ def parse_date_or_none(value):
         return datetime.strptime(str(value), "%Y-%m-%d").date()
     except Exception:
         return None
+
+
+def render_goals_tab(children_df):
+    st.subheader("🎯 Therapy Goals & Progress Tracking")
+    if children_df.empty:
+        st.info("Pehle ek child register karein.")
+        return
+
+    goal_child_options = {
+        f"ID {row['id']} - {row['child_name']} ({row['phone']})": row["id"]
+        for _, row in children_df.iterrows()
+    }
+    selected_label = st.selectbox(
+        "Child chunein:", list(goal_child_options.keys()), key="goals_child_select"
+    )
+    child_id = goal_child_options[selected_label]
+
+    with sqlite3.connect(DB_PATH) as conn:
+        goals_df = pd.read_sql(
+            "SELECT * FROM goals WHERE child_id=? ORDER BY id DESC",
+            conn,
+            params=(child_id,),
+        )
+
+    with st.expander("➕ Naya Goal Add Karein"):
+        with st.form(f"add_goal_{child_id}", clear_on_submit=True):
+            g_title = st.text_input("Goal Title *")
+            g_category = st.selectbox("Category", GOAL_CATEGORIES)
+            g_desc = st.text_area("Description")
+            g_target = st.date_input(
+                "Target Date", value=datetime.today() + timedelta(days=30)
+            )
+            g_status = st.selectbox("Status", GOAL_STATUSES)
+            g_submit = st.form_submit_button(
+                "💾 Goal Save Karein", use_container_width=True
+            )
+            if g_submit:
+                if g_title:
+                    with sqlite3.connect(DB_PATH) as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            """
+                            INSERT INTO goals
+                            (child_id, goal_title, category, description, target_date,
+                             status, created_by, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                child_id,
+                                g_title,
+                                g_category,
+                                g_desc,
+                                str(g_target),
+                                g_status,
+                                st.session_state["username"],
+                                datetime.now().isoformat(timespec="seconds"),
+                            ),
+                        )
+                        new_goal_id = cursor.lastrowid
+                        conn.commit()
+                    log_action(
+                        st.session_state["username"],
+                        "CREATE",
+                        "goals",
+                        new_goal_id,
+                        f"child_id={child_id}",
+                    )
+                    st.success("Goal add ho gaya!")
+                    st.rerun()
+                else:
+                    st.warning("Goal Title zaroori hai.")
+
+    if goals_df.empty:
+        st.info("Is child ke liye abhi tak koi goal set nahi hua hai.")
+        return
+
+    status_class_map = {
+        "Not Started": "badge-inactive",
+        "In Progress": "badge-treatment",
+        "Achieved": "badge-completed",
+        "On Hold": "badge-new",
+    }
+    for _, goal in goals_df.iterrows():
+        badge_cls = status_class_map.get(goal["status"], "badge-new")
+        st.markdown(
+            f"""
+            <div class="card">
+                <h4>{goal['goal_title']} <span class="{badge_cls}">{goal['status']}</span></h4>
+                <p><b>Category:</b> {goal['category'] or '—'} &nbsp; | &nbsp; <b>Target Date:</b> {goal['target_date'] or '—'}</p>
+                <p>{goal['description'] or ''}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        with sqlite3.connect(DB_PATH) as conn:
+            notes_df = pd.read_sql(
+                "SELECT * FROM goal_notes WHERE goal_id=? ORDER BY id DESC",
+                conn,
+                params=(goal["id"],),
+            )
+        if not notes_df.empty:
+            for _, note_row in notes_df.iterrows():
+                st.caption(
+                    f"📝 {note_row['created_at']} ({note_row['created_by']}): {note_row['note']}"
+                )
+        with st.expander(f"➕ Progress Note / Status Update — {goal['goal_title']}"):
+            with st.form(f"goal_update_{goal['id']}", clear_on_submit=True):
+                new_note = st.text_area(
+                    "Progress Note", key=f"note_{goal['id']}"
+                )
+                new_status = st.selectbox(
+                    "Status",
+                    GOAL_STATUSES,
+                    index=(
+                        GOAL_STATUSES.index(goal["status"])
+                        if goal["status"] in GOAL_STATUSES
+                        else 0
+                    ),
+                    key=f"status_{goal['id']}",
+                )
+                submit_note = st.form_submit_button(
+                    "💾 Update", use_container_width=True
+                )
+                if submit_note:
+                    with sqlite3.connect(DB_PATH) as conn:
+                        cursor = conn.cursor()
+                        if new_note.strip():
+                            cursor.execute(
+                                """
+                                INSERT INTO goal_notes (goal_id, note, created_by, created_at)
+                                VALUES (?, ?, ?, ?)
+                                """,
+                                (
+                                    goal["id"],
+                                    new_note.strip(),
+                                    st.session_state["username"],
+                                    datetime.now().isoformat(timespec="seconds"),
+                                ),
+                            )
+                        if new_status != goal["status"]:
+                            cursor.execute(
+                                "UPDATE goals SET status=? WHERE id=?",
+                                (new_status, goal["id"]),
+                            )
+                        conn.commit()
+                    log_action(
+                        st.session_state["username"],
+                        "UPDATE",
+                        "goals",
+                        goal["id"],
+                        f"status={new_status}",
+                    )
+                    st.success("Update ho gaya!")
+                    st.rerun()
+        st.divider()
+
+
+def render_documents_section(child_id):
+    st.markdown("#### 📎 Documents")
+    with sqlite3.connect(DB_PATH) as conn:
+        docs_df = pd.read_sql(
+            "SELECT * FROM documents WHERE child_id=? ORDER BY id DESC",
+            conn,
+            params=(child_id,),
+        )
+
+    with st.expander("⬆️ Naya Document Upload Karein"):
+        with st.form(f"upload_doc_{child_id}", clear_on_submit=True):
+            uploaded_file = st.file_uploader(
+                "File chunein (PDF, image, ya Word document)",
+                type=["pdf", "jpg", "jpeg", "png", "doc", "docx"],
+            )
+            doc_category = st.selectbox("Category", DOCUMENT_CATEGORIES)
+            upload_btn = st.form_submit_button(
+                "⬆️ Upload Karein", use_container_width=True
+            )
+            if upload_btn:
+                if uploaded_file is not None:
+                    safe_name = os.path.basename(uploaded_file.name)
+                    stored_name = (
+                        f"{datetime.now().strftime('%Y%m%d%H%M%S')}_"
+                        f"{secrets.token_hex(4)}_{safe_name}"
+                    )
+                    child_dir = os.path.join(UPLOADS_DIR, str(child_id))
+                    os.makedirs(child_dir, exist_ok=True)
+                    dest_path = os.path.join(child_dir, stored_name)
+                    with open(dest_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    with sqlite3.connect(DB_PATH) as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            """
+                            INSERT INTO documents
+                            (child_id, file_name, file_path, category, uploaded_by, uploaded_at)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                child_id,
+                                safe_name,
+                                dest_path,
+                                doc_category,
+                                st.session_state["username"],
+                                datetime.now().isoformat(timespec="seconds"),
+                            ),
+                        )
+                        new_doc_id = cursor.lastrowid
+                        conn.commit()
+                    log_action(
+                        st.session_state["username"],
+                        "CREATE",
+                        "documents",
+                        new_doc_id,
+                        safe_name,
+                    )
+                    st.success("Document upload ho gaya!")
+                    st.rerun()
+                else:
+                    st.warning("Kripya ek file chunein.")
+
+    if docs_df.empty:
+        st.info("Is child ke liye abhi tak koi document upload nahi hua hai.")
+        return
+
+    for _, doc in docs_df.iterrows():
+        d_col1, d_col2, d_col3 = st.columns([3, 1, 1])
+        with d_col1:
+            st.markdown(
+                f"📄 **{doc['file_name']}** — _{doc['category'] or 'Other'}_"
+            )
+            st.caption(
+                f"Uploaded by {doc['uploaded_by']} on {doc['uploaded_at']}"
+            )
+        with d_col2:
+            if os.path.exists(doc["file_path"]):
+                with open(doc["file_path"], "rb") as f:
+                    st.download_button(
+                        "⬇️ Download",
+                        data=f.read(),
+                        file_name=doc["file_name"],
+                        key=f"dl_{doc['id']}",
+                        use_container_width=True,
+                    )
+            else:
+                st.caption("File missing")
+        with d_col3:
+            if st.button(
+                "🗑️ Delete", key=f"del_doc_{doc['id']}", use_container_width=True
+            ):
+                if os.path.exists(doc["file_path"]):
+                    os.remove(doc["file_path"])
+                with sqlite3.connect(DB_PATH) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "DELETE FROM documents WHERE id=?", (doc["id"],)
+                    )
+                    conn.commit()
+                log_action(
+                    st.session_state["username"],
+                    "DELETE",
+                    "documents",
+                    doc["id"],
+                    doc["file_name"],
+                )
+                st.rerun()
 
 
 # ==========================================================
@@ -873,7 +1200,7 @@ else:
     # ROLE-BASED VIEW
     # ==========================================================
     if st.session_state["user_role"] == "HR Admin":
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
             [
                 "📋 Dashboard",
                 "🧒 Patient Profile",
@@ -882,6 +1209,7 @@ else:
                 "📅 Follow-up Tracker",
                 "🗑️ Delete Record",
                 "👥 Users & Audit Log",
+                "🎯 Therapy Goals",
             ]
         )
 
@@ -1349,6 +1677,9 @@ else:
                             )
                             st.success("Visit save ho gayi!")
                             st.rerun()
+
+                st.markdown("---")
+                render_documents_section(p_id)
 
                 st.markdown("---")
                 st.markdown("#### 📜 Is Receiver ke Baaki Patients")
@@ -2037,14 +2368,18 @@ else:
             else:
                 st.info("Abhi tak koi audit activity record nahi hui hai.")
 
+        # -------- TAB 8: THERAPY GOALS --------
+        with tab8:
+            render_goals_tab(children_df)
+
     # ==========================================================
     # STAFF / RECEIVER VIEW
     # ==========================================================
     else:
         st.subheader("📋 Patient Entries & Quick Follow-up Tracker")
 
-        tab_s1, tab_s2 = st.tabs(
-            ["📋 Meri/Sabhi Entries", "📞 Today's Follow-ups"]
+        tab_s1, tab_s2, tab_s3 = st.tabs(
+            ["📋 Meri/Sabhi Entries", "📞 Today's Follow-ups", "🎯 Therapy Goals"]
         )
 
         with tab_s1:
@@ -2100,3 +2435,6 @@ else:
                         st.divider()
             else:
                 st.success("Aaj ke liye koi pending follow-up nahi hai! 🎉")
+
+        with tab_s3:
+            render_goals_tab(children_df)
