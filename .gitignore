@@ -1,6 +1,7 @@
 crm.db
 crm.db-journal
 uploads/
+admin_first_login.txt
 __pycache__/
 *.pyc
 .venv/
