@@ -407,18 +407,49 @@ def init_db():
                 username TEXT PRIMARY KEY,
                 password TEXT NOT NULL,
                 name TEXT NOT NULL,
-                role TEXT NOT NULL
+                role TEXT NOT NULL,
+                must_change_password INTEGER DEFAULT 0
             )
             """
         )
+        cursor.execute("PRAGMA table_info(users)")
+        if "must_change_password" not in [row[1] for row in cursor.fetchall()]:
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0"
+            )
 
         cursor.execute("SELECT COUNT(*) FROM users")
         if cursor.fetchone()[0] == 0:
-            default_pass = hash_password("admin123")
+            generated_password = secrets.token_urlsafe(12)
+            default_pass = hash_password(generated_password)
             cursor.execute(
-                "INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)",
-                ("admin", default_pass, "HR Admin", "HR Admin"),
+                "INSERT INTO users (username, password, name, role, must_change_password) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("admin", default_pass, "HR Admin", "HR Admin", 1),
             )
+            print(
+                "\n"
+                "==================================================\n"
+                "First-time setup: a default HR Admin account was created.\n"
+                f"  Username: admin\n"
+                f"  Password: {generated_password}\n"
+                "This password is shown only once. It is also saved to "
+                "admin_first_login.txt — change it after logging in and "
+                "delete that file.\n"
+                "==================================================\n"
+            )
+            try:
+                with open("admin_first_login.txt", "w") as f:
+                    f.write(
+                        "Normal Child Clinic CRM — initial admin login\n"
+                        f"Username: admin\n"
+                        f"Password: {generated_password}\n"
+                        "Log in, change this password immediately from the "
+                        "sidebar's 'Change Password' section, then delete "
+                        "this file.\n"
+                    )
+            except OSError:
+                pass
 
         cursor.execute(
             """
@@ -540,6 +571,7 @@ for key, default in {
     "user_name": "",
     "user_branch_id": None,
     "active_branch_id": None,
+    "must_change_password": False,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -570,7 +602,8 @@ def login_user(username, password):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT username, name, role, password, branch_id FROM users WHERE username=?",
+            "SELECT username, name, role, password, branch_id, must_change_password "
+            "FROM users WHERE username=?",
             (username,),
         )
         row = cursor.fetchone()
@@ -582,7 +615,7 @@ def login_user(username, password):
                 (hash_password(password), row[0]),
             )
             conn.commit()
-        return (row[0], row[1], row[2], row[4])
+        return (row[0], row[1], row[2], row[4], bool(row[5]))
 
 
 def add_user(username, password, name, role, branch_id=None):
@@ -598,6 +631,16 @@ def add_user(username, password, name, role, branch_id=None):
         return True
     except sqlite3.IntegrityError:
         return False
+
+
+def change_password(username, new_password):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET password=?, must_change_password=0 WHERE username=?",
+            (hash_password(new_password), username),
+        )
+        conn.commit()
 
 
 def status_badge(status):
@@ -1415,6 +1458,7 @@ if not st.session_state["logged_in"]:
                         st.session_state["user_name"] = result[1]
                         st.session_state["user_role"] = result[2]
                         st.session_state["user_branch_id"] = result[3]
+                        st.session_state["must_change_password"] = result[4]
                         st.success(f"Swagat hai, {result[1]}!")
                         st.rerun()
                     else:
@@ -1490,7 +1534,44 @@ else:
         st.session_state["user_name"] = ""
         st.session_state["user_branch_id"] = None
         st.session_state["active_branch_id"] = None
+        st.session_state["must_change_password"] = False
         st.rerun()
+
+    with st.sidebar.expander(
+        "🔑 Change Password",
+        expanded=st.session_state["must_change_password"],
+    ):
+        with st.form("change_password_form", clear_on_submit=True):
+            cp_current = st.text_input("Current Password", type="password")
+            cp_new = st.text_input("New Password", type="password")
+            cp_confirm = st.text_input("Confirm New Password", type="password")
+            cp_submit = st.form_submit_button(
+                "💾 Password Update Karein", use_container_width=True
+            )
+            if cp_submit:
+                login_check = login_user(
+                    st.session_state["username"], cp_current
+                )
+                if not login_check:
+                    st.error("Current password galat hai.")
+                elif len(cp_new) < 8:
+                    st.warning(
+                        "Naya password kam se kam 8 characters ka hona chahiye."
+                    )
+                elif cp_new != cp_confirm:
+                    st.error("Naya password aur Confirm password match nahi karte.")
+                else:
+                    change_password(st.session_state["username"], cp_new)
+                    st.session_state["must_change_password"] = False
+                    log_action(
+                        st.session_state["username"],
+                        "UPDATE",
+                        "users",
+                        st.session_state["username"],
+                        "password changed",
+                    )
+                    st.success("Password update ho gaya!")
+                    st.rerun()
 
     with sqlite3.connect(DB_PATH) as conn:
         branches_df = pd.read_sql(
@@ -1843,6 +1924,12 @@ else:
 
     st.title("🏥 Normal Child Clinic — CRM Dashboard")
     st.caption(f"Aaj: {datetime.today().strftime('%d %B %Y')}")
+
+    if st.session_state["must_change_password"]:
+        st.warning(
+            "⚠️ Aap abhi bhi auto-generated default password use kar rahe hain. "
+            "Sidebar mein '🔑 Change Password' se ise turant badal dein."
+        )
 
     # ---------- TODAY'S ALERT BANNER ----------
     if not df.empty:
