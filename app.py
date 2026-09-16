@@ -28,28 +28,56 @@ st.markdown(
     /* Metric Card Custom HTML Fix */
     .metric-card {
         background-color: #ffffff !important;
-        padding: 16px 20px !important;
-        border-radius: 12px !important;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.2) !important;
-        border: 1px solid #cbd5e1 !important;
+        padding: 16px 18px 16px 16px !important;
+        border-radius: 14px !important;
+        box-shadow: 0 4px 14px rgba(11,11,11,0.10) !important;
+        border: 1px solid #ececec !important;
+        border-left: 6px solid var(--accent, #2a78d6) !important;
         text-align: left !important;
         margin-bottom: 15px !important;
+        display: flex !important;
+        align-items: center !important;
+        gap: 12px !important;
+        transition: transform 0.15s ease, box-shadow 0.15s ease !important;
+    }
+    .metric-card:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 8px 20px rgba(11,11,11,0.14) !important;
+    }
+    .metric-icon {
+        flex-shrink: 0 !important;
+        width: 36px !important;
+        height: 36px !important;
+        border-radius: 10px !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        font-size: 18px !important;
+        background: color-mix(in srgb, var(--accent, #2a78d6) 16%, #ffffff) !important;
+    }
+    .metric-text {
+        display: flex !important;
+        flex-direction: column !important;
+        min-width: 0 !important;
     }
     .metric-label {
-        color: #334155 !important;
+        color: #52514e !important;
         font-weight: 700 !important;
-        font-size: 14px !important;
-        margin-bottom: 6px !important;
+        font-size: 12.5px !important;
+        margin-bottom: 4px !important;
         display: block !important;
-        -webkit-text-fill-color: #334155 !important;
+        overflow-wrap: normal !important;
+        word-break: normal !important;
+        hyphens: none !important;
+        -webkit-text-fill-color: #52514e !important;
     }
     .metric-value {
-        color: #1d4ed8 !important;
+        color: #0b0b0b !important;
         font-weight: 800 !important;
-        font-size: 28px !important;
-        line-height: 1.2 !important;
+        font-size: 26px !important;
+        line-height: 1.15 !important;
         margin: 0 !important;
-        -webkit-text-fill-color: #1d4ed8 !important;
+        -webkit-text-fill-color: #0b0b0b !important;
     }
 
     /* Custom Card Fix for Patient Profile */
@@ -102,6 +130,29 @@ CONDITIONS = [
 SEVERITIES = ["Not Specified", "Mild", "Moderate", "Severe"]
 GENDERS = ["Male", "Female", "Other"]
 STATUSES = ["New Lead", "In Treatment", "Completed", "Inactive"]
+# Validated categorical palette (fixed order — never cycled/reassigned per filter).
+CHART_PALETTE = [
+    "#2a78d6",  # 1 blue
+    "#eb6834",  # 2 orange
+    "#1baf7a",  # 3 aqua
+    "#eda100",  # 4 yellow
+    "#e87ba4",  # 5 magenta
+    "#008300",  # 6 green
+    "#4a3aa7",  # 7 violet
+    "#e34948",  # 8 red
+]
+# Fixed status palette — reserved for state, never reused as a categorical slot.
+STATUS_COLORS = {
+    "good": "#0ca30c",
+    "warning": "#fab219",
+    "serious": "#ec835a",
+    "critical": "#d03b3b",
+}
+PAYMENT_STATUS_COLOR_MAP = {
+    "Paid": STATUS_COLORS["good"],
+    "Partial": STATUS_COLORS["warning"],
+    "Pending": STATUS_COLORS["serious"],
+}
 SELF_SIGNUP_ROLES = ["Receptionist", "Doctor", "Therapist"]
 ADMIN_CREATABLE_ROLES = ["Receptionist", "Doctor", "Therapist", "HR Admin"]
 CLINICAL_ROLES = {"Doctor", "Therapist"}
@@ -559,11 +610,14 @@ def status_badge(status):
     return f'<span class="{cls}">{status or "—"}</span>'
 
 
-def custom_metric(label, value):
+def custom_metric(label, value, icon="📊", color=CHART_PALETTE[0]):
     return f"""
-    <div class="metric-card">
-        <span class="metric-label">{label}</span>
-        <h2 class="metric-value">{value}</h2>
+    <div class="metric-card" style="--accent: {color};">
+        <div class="metric-icon">{icon}</div>
+        <div class="metric-text">
+            <span class="metric-label">{label}</span>
+            <h2 class="metric-value">{value}</h2>
+        </div>
     </div>
     """
 
@@ -1152,17 +1206,24 @@ def render_clinical_dashboard(df, children_df, today_str):
     )
 
     m1.markdown(
-        custom_metric("Mere Patients", total_children), unsafe_allow_html=True
+        custom_metric(
+            "Mere Patients", total_children, "🧒", CHART_PALETTE[0]
+        ),
+        unsafe_allow_html=True,
     )
     m2.markdown(
-        custom_metric("Aaj ke Visits", today_visits), unsafe_allow_html=True
+        custom_metric("Aaj ke Visits", today_visits, "📅", CHART_PALETTE[1]),
+        unsafe_allow_html=True,
     )
     m3.markdown(
-        custom_metric("Aaj ke Follow-ups", today_followups),
+        custom_metric(
+            "Aaj ke Follow-ups", today_followups, "📞", CHART_PALETTE[2]
+        ),
         unsafe_allow_html=True,
     )
     m4.markdown(
-        custom_metric("In Treatment", in_treatment), unsafe_allow_html=True
+        custom_metric("In Treatment", in_treatment, "💊", CHART_PALETTE[3]),
+        unsafe_allow_html=True,
     )
 
     st.markdown("###")
@@ -1208,7 +1269,11 @@ def render_clinical_dashboard(df, children_df, today_str):
                 cond_counts = cond_series.value_counts().reset_index()
                 cond_counts.columns = ["Condition", "Count"]
                 fig1 = px.pie(
-                    cond_counts, names="Condition", values="Count", hole=0.45
+                    cond_counts,
+                    names="Condition",
+                    values="Count",
+                    hole=0.45,
+                    color_discrete_sequence=CHART_PALETTE,
                 )
                 fig1.update_layout(
                     margin=dict(t=10, b=10, l=10, r=10), height=320
@@ -1221,7 +1286,12 @@ def render_clinical_dashboard(df, children_df, today_str):
             status_counts = children_df["status"].value_counts().reset_index()
             status_counts.columns = ["Status", "Count"]
             fig2 = px.bar(
-                status_counts, x="Status", y="Count", color="Status", text="Count"
+                status_counts,
+                x="Status",
+                y="Count",
+                color="Status",
+                text="Count",
+                color_discrete_sequence=CHART_PALETTE,
             )
             fig2.update_layout(
                 margin=dict(t=10, b=10, l=10, r=10),
@@ -1836,26 +1906,43 @@ else:
             )
 
             m1.markdown(
-                custom_metric("Total Children", total_children),
+                custom_metric(
+                    "Total Children", total_children, "🧒", CHART_PALETTE[0]
+                ),
                 unsafe_allow_html=True,
             )
             m2.markdown(
-                custom_metric("Aaj ke Visits", today_visits),
+                custom_metric(
+                    "Aaj ke Visits", today_visits, "📅", CHART_PALETTE[1]
+                ),
                 unsafe_allow_html=True,
             )
             m3.markdown(
-                custom_metric("Aaj ke Follow-ups", today_followups),
+                custom_metric(
+                    "Aaj ke Follow-ups",
+                    today_followups,
+                    "📞",
+                    CHART_PALETTE[2],
+                ),
                 unsafe_allow_html=True,
             )
             m4.markdown(
-                custom_metric("In Treatment", in_treatment),
+                custom_metric(
+                    "In Treatment", in_treatment, "💊", CHART_PALETTE[3]
+                ),
                 unsafe_allow_html=True,
             )
             m5.markdown(
-                custom_metric("New Leads", new_leads), unsafe_allow_html=True
+                custom_metric("New Leads", new_leads, "🆕", CHART_PALETTE[4]),
+                unsafe_allow_html=True,
             )
             m6.markdown(
-                custom_metric("Total Revenue", f"₹{total_revenue:,.0f}"),
+                custom_metric(
+                    "Total Revenue",
+                    f"₹{total_revenue:,.0f}",
+                    "💰",
+                    CHART_PALETTE[5],
+                ),
                 unsafe_allow_html=True,
             )
 
@@ -1910,6 +1997,7 @@ else:
                             names="Condition",
                             values="Count",
                             hole=0.45,
+                            color_discrete_sequence=CHART_PALETTE,
                         )
                         fig1.update_layout(
                             margin=dict(t=10, b=10, l=10, r=10), height=320
@@ -1930,6 +2018,7 @@ else:
                         y="Count",
                         color="Status",
                         text="Count",
+                        color_discrete_sequence=CHART_PALETTE,
                     )
                     fig2.update_layout(
                         margin=dict(t=10, b=10, l=10, r=10),
@@ -1951,9 +2040,13 @@ else:
                             x="Service Type",
                             y="Visits",
                             text="Visits",
+                            color="Service Type",
+                            color_discrete_sequence=CHART_PALETTE,
                         )
                         fig_svc.update_layout(
-                            margin=dict(t=10, b=10, l=10, r=10), height=320
+                            margin=dict(t=10, b=10, l=10, r=10),
+                            height=320,
+                            showlegend=False,
                         )
                         st.plotly_chart(fig_svc, use_container_width=True)
                     else:
@@ -1971,6 +2064,8 @@ else:
                             names="Payment Status",
                             values="Count",
                             hole=0.45,
+                            color="Payment Status",
+                            color_discrete_map=PAYMENT_STATUS_COLOR_MAP,
                         )
                         fig_pay.update_layout(
                             margin=dict(t=10, b=10, l=10, r=10), height=320
@@ -1994,6 +2089,14 @@ else:
                     )
                     fig3 = px.line(
                         daily_counts, x="visit_date", y="Visits", markers=True
+                    )
+                    fig3.update_traces(
+                        line=dict(color=CHART_PALETTE[0], width=2),
+                        marker=dict(
+                            color=CHART_PALETTE[0],
+                            size=8,
+                            line=dict(color="#fcfcfb", width=2),
+                        ),
                     )
                     fig3.update_layout(
                         margin=dict(t=10, b=10, l=10, r=10), height=280
@@ -2019,7 +2122,11 @@ else:
                         .reset_index()
                     )
                     fig5 = px.bar(
-                        monthly_rev, x="month", y="fee_amount", text_auto=".2s"
+                        monthly_rev,
+                        x="month",
+                        y="fee_amount",
+                        text_auto=".2s",
+                        color_discrete_sequence=[CHART_PALETTE[5]],
                     )
                     fig5.update_layout(
                         margin=dict(t=10, b=10, l=10, r=10),
@@ -2093,6 +2200,7 @@ else:
                     x="Receiver Naam",
                     y="Kul Entries",
                     text="Kul Entries",
+                    color_discrete_sequence=[CHART_PALETTE[6]],
                 )
                 fig4.update_layout(
                     margin=dict(t=10, b=10, l=10, r=10), height=280
