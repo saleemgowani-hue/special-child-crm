@@ -408,14 +408,20 @@ def init_db():
                 password TEXT NOT NULL,
                 name TEXT NOT NULL,
                 role TEXT NOT NULL,
-                must_change_password INTEGER DEFAULT 0
+                must_change_password INTEGER DEFAULT 0,
+                temp_plaintext_password TEXT
             )
             """
         )
         cursor.execute("PRAGMA table_info(users)")
-        if "must_change_password" not in [row[1] for row in cursor.fetchall()]:
+        existing_user_cols = [row[1] for row in cursor.fetchall()]
+        if "must_change_password" not in existing_user_cols:
             cursor.execute(
                 "ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0"
+            )
+        if "temp_plaintext_password" not in existing_user_cols:
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN temp_plaintext_password TEXT"
             )
 
         cursor.execute("SELECT COUNT(*) FROM users")
@@ -423,9 +429,10 @@ def init_db():
             generated_password = secrets.token_urlsafe(12)
             default_pass = hash_password(generated_password)
             cursor.execute(
-                "INSERT INTO users (username, password, name, role, must_change_password) "
-                "VALUES (?, ?, ?, ?, ?)",
-                ("admin", default_pass, "HR Admin", "HR Admin", 1),
+                "INSERT INTO users "
+                "(username, password, name, role, must_change_password, temp_plaintext_password) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("admin", default_pass, "HR Admin", "HR Admin", 1, generated_password),
             )
             print(
                 "\n"
@@ -637,7 +644,8 @@ def change_password(username, new_password):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE users SET password=?, must_change_password=0 WHERE username=?",
+            "UPDATE users SET password=?, must_change_password=0, "
+            "temp_plaintext_password=NULL WHERE username=?",
             (hash_password(new_password), username),
         )
         conn.commit()
@@ -1439,6 +1447,23 @@ if not st.session_state["logged_in"]:
             unsafe_allow_html=True,
         )
         st.markdown("---")
+
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT username, temp_plaintext_password FROM users "
+                "WHERE must_change_password=1 AND temp_plaintext_password IS NOT NULL"
+            )
+            first_setup_rows = cursor.fetchall()
+        if first_setup_rows:
+            for fs_username, fs_password in first_setup_rows:
+                st.warning(
+                    f"🔑 **First-time setup** — Username: `{fs_username}` · "
+                    f"Password: `{fs_password}`\n\n"
+                    "Login karke turant sidebar se 'Change Password' se ise "
+                    "badal dein — ye notice password change karte hi hamesha "
+                    "ke liye gayab ho jayega."
+                )
 
         auth_tab1, auth_tab2 = st.tabs(["🔑 Login", "📝 Sign Up"])
 
