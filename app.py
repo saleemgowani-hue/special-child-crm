@@ -117,6 +117,20 @@ st.markdown(
 )
 
 DB_PATH = "crm.db"
+DEFAULT_ADMIN_USERNAME = "admin"
+
+
+def get_configured_admin_password():
+    """An operator-set default admin password, read from Streamlit secrets
+    (Settings -> Secrets on Streamlit Cloud, or .streamlit/secrets.toml
+    locally) — never committed to the repo. Stays stable across restarts
+    on platforms where secrets persist but the filesystem doesn't. Returns
+    None if not configured, in which case a random one-time password is
+    generated and shown on first boot instead."""
+    try:
+        return st.secrets.get("ADMIN_PASSWORD")
+    except Exception:
+        return None
 CONDITIONS = [
     "Autism (ASD)",
     "ADHD",
@@ -426,37 +440,29 @@ def init_db():
 
         cursor.execute("SELECT COUNT(*) FROM users")
         if cursor.fetchone()[0] == 0:
-            generated_password = secrets.token_urlsafe(12)
-            default_pass = hash_password(generated_password)
-            cursor.execute(
-                "INSERT INTO users "
-                "(username, password, name, role, must_change_password, temp_plaintext_password) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                ("admin", default_pass, "HR Admin", "HR Admin", 1, generated_password),
-            )
-            print(
-                "\n"
-                "==================================================\n"
-                "First-time setup: a default HR Admin account was created.\n"
-                f"  Username: admin\n"
-                f"  Password: {generated_password}\n"
-                "This password is shown only once. It is also saved to "
-                "admin_first_login.txt — change it after logging in and "
-                "delete that file.\n"
-                "==================================================\n"
-            )
-            try:
-                with open("admin_first_login.txt", "w") as f:
-                    f.write(
-                        "Normal Child Clinic CRM — initial admin login\n"
-                        f"Username: admin\n"
-                        f"Password: {generated_password}\n"
-                        "Log in, change this password immediately from the "
-                        "sidebar's 'Change Password' section, then delete "
-                        "this file.\n"
-                    )
-            except OSError:
-                pass
+            configured_password = get_configured_admin_password()
+            if configured_password:
+                default_pass = hash_password(configured_password)
+                cursor.execute(
+                    "INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)",
+                    (DEFAULT_ADMIN_USERNAME, default_pass, "HR Admin", "HR Admin"),
+                )
+            else:
+                generated_password = secrets.token_urlsafe(12)
+                default_pass = hash_password(generated_password)
+                cursor.execute(
+                    "INSERT INTO users "
+                    "(username, password, name, role, must_change_password, temp_plaintext_password) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        DEFAULT_ADMIN_USERNAME,
+                        default_pass,
+                        "HR Admin",
+                        "HR Admin",
+                        1,
+                        generated_password,
+                    ),
+                )
 
         cursor.execute(
             """
@@ -1448,21 +1454,28 @@ if not st.session_state["logged_in"]:
         )
         st.markdown("---")
 
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT username, temp_plaintext_password FROM users "
-                "WHERE must_change_password=1 AND temp_plaintext_password IS NOT NULL"
+        if get_configured_admin_password():
+            st.info(
+                f"🔑 **Admin Login** — Username: `{DEFAULT_ADMIN_USERNAME}` · "
+                "Password: aapke Streamlit Secrets mein set `ADMIN_PASSWORD` wala."
             )
-            first_setup_rows = cursor.fetchall()
-        if first_setup_rows:
+        else:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT username, temp_plaintext_password FROM users "
+                    "WHERE must_change_password=1 AND temp_plaintext_password IS NOT NULL"
+                )
+                first_setup_rows = cursor.fetchall()
             for fs_username, fs_password in first_setup_rows:
                 st.warning(
                     f"🔑 **First-time setup** — Username: `{fs_username}` · "
                     f"Password: `{fs_password}`\n\n"
                     "Login karke turant sidebar se 'Change Password' se ise "
                     "badal dein — ye notice password change karte hi hamesha "
-                    "ke liye gayab ho jayega."
+                    "ke liye gayab ho jayega. (Restart pe password badalte "
+                    "rehne se bachne ke liye Streamlit Secrets mein "
+                    "`ADMIN_PASSWORD` set kar dein.)"
                 )
 
         auth_tab1, auth_tab2 = st.tabs(["🔑 Login", "📝 Sign Up"])
